@@ -1,0 +1,22 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Project-specific
+data/raw/
+data/processed/
+runs/
+.chroma/
+*.sqlite
+*.duckdb
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
