@@ -1,30 +1,48 @@
 # finrag
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Retrieval + agent system over SEC filings (10-K / 10-Q / earnings calls). A
-hands-on LLM application engineering project: every wave ships an independently
-useful slice and an updated metric line in the table below.
+hands-on LLM application engineering project for financial research workflows,
+structured answers, citations, evaluation, and deployable AI product surfaces.
 
-## Status
+## Overview
 
-See [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for detailed wave plans + DoD.
+finrag is a portfolio-grade financial RAG project for answering investment
+research questions over company filings with traceable citations. The project
+is designed to grow from a simple cloud-API-backed RAG baseline into an
+evaluated, observable, agentic system with retrieval experiments, financial
+tools, public demo surfaces, and MCP integration.
 
-| Wave | Title | Status | Headline metric | Commit |
-|---|---|---|---|---|
-| 0 | Foundation (LLM dispatch, scaffolding) | ✅ shipped (live verify pending) | — | `ac0da4e` |
-| 1 | Naive RAG baseline + structured output (Postgres + pgvector) | ⏳ next | recall@10, faithfulness | — |
-| 2 | Eval harness | ⏳ | retrieval + LLM-judge metrics | — |
-| 3 | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite) | ⏳ | recall@10 ablation table | — |
-| 4 | ReAct agent + tools, then LangGraph migration | ⏳ | task success rate | — |
-| 5 | Production hardening (caching, streaming, tracing, FastAPI/Streamlit, cloud deploy) | ⏳ | p50 latency, $/query | — |
-| 6 | Security & protocols (prompt-injection red team, output guardrails, MCP server) | ⏳ | attack-success-rate ↓ | — |
-| 7 | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳ | per-item resume bullets | — |
+The target user is a developer, analyst, or interviewer who wants to inspect how
+the system ingests filings, retrieves relevant evidence, validates structured
+answers, measures quality, and exposes the workflow through CLI, API, UI, and
+agent tools.
+
+## Roadmap
+
+| Wave | Title | Status | Headline metric |
+|---|---|---|---|
+| 0 | Foundation (LLM dispatch, scaffolding) | ✅ shipped (live verify pending) | — |
+| 1a | Postgres + pgvector schema + one embedding provider | ⏳ next | schema migration idempotent; `embed()` returns vectors |
+| 1b | Dense retrieval + cited answer (pydantic) over local fixture | ⏳ | structured `Answer` with valid citations |
+| 1c | EDGAR ingestion + CLI driver | ⏳ | `finrag ingest` + `finrag ask` end-to-end |
+| 1d | OpenRouter as 4th provider (open-weight via cloud) | ⏳ | `LLM_PROVIDER=openrouter` round-trip |
+| 1.5 | Mini-eval (5–10 hand-graded items) | ⏳ | retrieval hit-rate, citation validity |
+| 2 | Eval harness (30–50 curated items) | ⏳ | recall@k, MRR, nDCG, faithfulness |
+| 3 | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite) | ⏳ | recall@10 ablation table |
+| 4 | ReAct agent + tools, then LangGraph migration | ⏳ | task success rate |
+| 5A | Public demo (FastAPI + Streamlit deployed) | ⏳ | demo URL, citation UI |
+| 5B | Observability, cost, streaming, caching | ⏳ | p50 latency, $/query (before/after) |
+| 6 | Security & protocols (prompt-injection red team, output guardrails, MCP server) | ⏳ | attack-success-rate ↓ |
+| 7 | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳ | per-item resume bullets |
 
 ## Stack (cloud APIs only — no local services)
 
 | Layer | Primary | Backup(s) |
 |---|---|---|
 | LLM (closed) | Google Gemini (`2.5-flash` / `-pro` / `-flash-lite`) | Anthropic Claude, OpenAI |
-| LLM (open-weight via cloud) | OpenRouter (Llama 3.3 / Qwen / DeepSeek free tier) | Together, Groq |
+| LLM (open-weight via cloud) | OpenRouter (Llama 3.3 / Qwen / DeepSeek free tier) — *planned, Wave 1d* | Together, Groq |
 | Embedding | Gemini `gemini-embedding-001` (768d) | Voyage `voyage-3-large`, Cohere `embed-v4.0` |
 | Reranker | Jina `rerank-v2-multilingual` | Cohere `rerank-v3.5` |
 | Vector + lexical store | **Neon Postgres + pgvector + tsvector FTS** | Supabase, Aiven |
@@ -39,8 +57,7 @@ See [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for detailed wave plans + DoD.
 
 Provider switching is environment-controlled (`LLM_PROVIDER`,
 `EMBEDDING_PROVIDER`, `RERANKER_PROVIDER`) and implemented as single-file
-`if/elif` dispatch. See [PROJECT_RULES.md](PROJECT_RULES.md) for the engineering
-discipline this project commits to.
+`if/elif` dispatch.
 
 ## Quick start
 
@@ -55,28 +72,30 @@ uv run pytest
 
 ```
 src/
-  config.py         # env-driven settings
-  llm.py            # 4-provider chat dispatch (Gemini / Anthropic / OpenAI / OpenRouter)
-  embed.py          # 3-provider embedding dispatch        (Wave 1)
-  rerank.py         # 2-provider reranker dispatch         (Wave 3)
-  db.py             # psycopg + schema bootstrap           (Wave 1)
-  ingest.py         # parse → split → embed → upsert       (Wave 1)
-  retrieve.py       # vector / FTS / hybrid / rerank       (Wave 1, expanded Wave 3)
-  rag.py            # retrieve → prompt → Answer (pydantic) (Wave 1)
-  agent.py          # ReAct loop                           (Wave 4)
-  tools/            # 5 financial tools                    (Wave 4)
-  guardrails.py     # input/output filters                 (Wave 6)
-  mcp_server.py     # expose tools as MCP server           (Wave 6)
-  financial/        # domain-specific (EDGAR, table extract, pydantic schemas)
-  api.py            # FastAPI                              (Wave 5)
-  ui.py             # Streamlit                            (Wave 5)
-  cli.py
+  llm.py            # LLM dispatch
+  embed.py          # embedding dispatch
+  db.py             # Postgres connection + schema bootstrap
+  rag.py            # retrieve → prompt → Answer (pydantic)
+  retrieve.py       # vector / FTS / hybrid / rerank retrieval
+  ingest.py         # parse → split → embed → upsert
+  cli.py            # finrag ask / ingest
+  financial/        # EDGAR, table extraction, pydantic schemas
+  rerank.py         # reranker dispatch
+  agent.py          # ReAct loop
+  tools/            # financial tools
+  api.py            # FastAPI
+  ui.py             # Streamlit
+  guardrails.py     # input/output filters
+  mcp_server.py     # expose tools as MCP server
 prompts/            # versioned prompt files
-sql/                # schema migrations                    (Wave 1)
+sql/                # schema migrations
 eval/               # questions, red-team set, metrics, reports
-experiments/        # ablation scripts                     (Wave 3+)
-edge/               # Cloudflare Worker source             (Wave 7)
-tests/
+experiments/        # ablation scripts
+edge/               # Cloudflare Worker source
+.env.example
+pyproject.toml
+README.md
+README.zh-CN.md
 ```
 
 ## License
