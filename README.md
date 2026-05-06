@@ -23,11 +23,11 @@ agent tools.
 
 | Wave | Title | Status | Headline metric |
 |---|---|---|---|
-| 0 | Foundation (LLM dispatch, scaffolding) | ✅ shipped (live verify pending) | — |
-| 1a | Postgres + pgvector schema + one embedding provider | ⏳ next | schema migration idempotent; `embed()` returns vectors |
+| 0 | Foundation (closed LLM dispatch, scaffolding) | ✅ shipped (live verify pending) | — |
+| 1a | Postgres + pgvector schema + NVIDIA embedding provider | ⏳ next | schema migration idempotent; `embed()` returns 768d vectors |
 | 1b | Dense retrieval + cited answer (pydantic) over local fixture | ⏳ | structured `Answer` with valid citations |
 | 1c | EDGAR ingestion + CLI driver | ⏳ | `finrag ingest` + `finrag ask` end-to-end |
-| 1d | OpenRouter as 4th provider (open-weight via cloud) | ⏳ | `LLM_PROVIDER=openrouter` round-trip |
+| 1d | NVIDIA NIM as cloud open-weight provider | ⏳ | `LLM_PROVIDER=nvidia` round-trip |
 | 1.5 | Mini-eval (5–10 hand-graded items) | ⏳ | retrieval hit-rate, citation validity |
 | 2 | Eval harness (30–50 curated items) | ⏳ | recall@k, MRR, nDCG, faithfulness |
 | 3 | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite) | ⏳ | recall@10 ablation table |
@@ -39,21 +39,21 @@ agent tools.
 
 ## Stack (cloud APIs only — no local services)
 
-| Layer | Primary | Backup(s) |
-|---|---|---|
-| LLM (closed) | Google Gemini (`2.5-flash` / `-pro` / `-flash-lite`) | Anthropic Claude, OpenAI |
-| LLM (open-weight via cloud) | OpenRouter (Llama 3.3 / Qwen / DeepSeek free tier) — *planned, Wave 1d* | Together, Groq |
-| Embedding | Gemini `gemini-embedding-001` (768d) | Voyage `voyage-3-large`, Cohere `embed-v4.0` |
-| Reranker | Jina `rerank-v2-multilingual` | Cohere `rerank-v3.5` |
-| Vector + lexical store | **Neon Postgres + pgvector + tsvector FTS** | Supabase, Aiven |
-| Agent | hand-written ReAct → LangGraph (Wave 4) | LlamaIndex (Wave 7 comparison) |
-| Eval | hand-written + ragas | — |
-| Tracing | Langfuse Cloud | — |
-| Output validation | pydantic | — |
-| Guardrails (Wave 6) | OpenAI Moderation + custom regex/PII | Llama Guard via OpenRouter |
-| MCP (Wave 6) | official `mcp` Python SDK as server | — |
-| API / UI | FastAPI + Streamlit | — |
-| Deployment | Render / Railway / Fly.io free tier; Cloudflare Worker for edge demo | — |
+| Layer                       | Primary                                                                 | Backup(s)                                    |
+| --------------------------- | ----------------------------------------------------------------------- | -------------------------------------------- |
+| LLM (closed)                | Google Gemini (`2.5-flash` / `-pro` / `-flash-lite`)                    | Anthropic Claude, OpenAI                     |
+| LLM (open-weight via cloud) | NVIDIA NIM / build.nvidia.com (Llama / Qwen / DeepSeek / Nemotron) — *planned, Wave 1d* | Together, Groq                               |
+| Embedding                   | NVIDIA NeMo Retriever `nvidia/nv-embedqa-e5-v5` (768d target)           | Gemini `gemini-embedding-001`, Voyage, Cohere |
+| Reranker                    | NVIDIA NeMo Retriever `nvidia/nv-rerankqa-mistral-4b-v3`                | Jina `rerank-v2-multilingual`, Cohere         |
+| Vector + lexical store      | **Neon Postgres + pgvector + tsvector FTS**                             | Supabase, Aiven                              |
+| Agent                       | hand-written ReAct → LangGraph (Wave 4)                                 | LlamaIndex (Wave 7 comparison)               |
+| Eval                        | hand-written + ragas; NVIDIA NIM judge after Wave 1d                    | Gemini judge fallback                        |
+| Tracing                     | Langfuse Cloud                                                          | —                                            |
+| Output validation           | pydantic                                                                | —                                            |
+| Guardrails (Wave 6)         | NVIDIA NemoGuard + custom regex/PII                                     | OpenAI Moderation                            |
+| MCP (Wave 6)                | official `mcp` Python SDK as server                                     | —                                            |
+| API / UI                    | FastAPI + Streamlit                                                     | —                                            |
+| Deployment                  | Render / Railway / Fly.io free tier; Cloudflare Worker for edge demo    | —                                            |
 
 Provider switching is environment-controlled (`LLM_PROVIDER`,
 `EMBEDDING_PROVIDER`, `RERANKER_PROVIDER`) and implemented as single-file
@@ -64,7 +64,7 @@ Provider switching is environment-controlled (`LLM_PROVIDER`,
 ```bash
 uv sync --extra dev
 cp .env.example .env
-# fill in GEMINI_API_KEY at minimum
+# fill in GEMINI_API_KEY at minimum for Wave 0
 uv run pytest
 ```
 
