@@ -54,7 +54,7 @@ Provider dispatch 使用单文件 `if/elif` 组织。
 ## 快速开始
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 cp .env.example .env
 # Wave 0 至少填写 GEMINI_API_KEY
 uv run pytest

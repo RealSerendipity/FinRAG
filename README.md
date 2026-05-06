@@ -62,7 +62,7 @@ Provider switching is environment-controlled (`LLM_PROVIDER`,
 ## Quick start
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 cp .env.example .env
 # fill in GEMINI_API_KEY at minimum for Wave 0
 uv run pytest
