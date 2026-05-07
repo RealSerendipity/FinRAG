@@ -59,5 +59,29 @@ def api_key(provider: str) -> str | None:
             "gemini": "GEMINI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
             "openai": "OPENAI_API_KEY",
+            "nvidia": "NVIDIA_API_KEY",
         }[provider]
     )
+
+
+# ----- Database -----
+
+def database_url() -> str:
+    val = os.environ.get("DATABASE_URL", "")
+    if not val:
+        raise RuntimeError("DATABASE_URL is not set.")
+    return val
+
+
+# ----- Embedding -----
+
+def embedding_model() -> str:
+    return os.environ.get("EMBEDDING_MODEL", "nvidia/nv-embedqa-e5-v5")
+
+
+def embedding_dim() -> int:
+    return int(os.environ.get("EMBEDDING_DIM", "1024"))
+
+
+def nvidia_base_url() -> str:
+    return os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
