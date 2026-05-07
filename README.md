@@ -21,21 +21,21 @@ agent tools.
 
 ## Roadmap
 
-| Wave | Title | Status | Headline metric |
-|---|---|---|---|
-| 0 | Foundation (closed LLM dispatch, scaffolding) | ✅ shipped (live verify pending) | — |
-| 1a | Postgres + pgvector schema + NVIDIA embedding provider | ⏳ next | schema migration idempotent; `embed()` returns 768d vectors |
-| 1b | Dense retrieval + cited answer (pydantic) over local fixture | ⏳ | structured `Answer` with valid citations |
-| 1c | EDGAR ingestion + CLI driver | ⏳ | `finrag ingest` + `finrag ask` end-to-end |
-| 1d | NVIDIA NIM as cloud open-weight provider | ⏳ | `LLM_PROVIDER=nvidia` round-trip |
-| 1.5 | Mini-eval (5–10 hand-graded items) | ⏳ | retrieval hit-rate, citation validity |
-| 2 | Eval harness (30–50 curated items) | ⏳ | recall@k, MRR, nDCG, faithfulness |
-| 3 | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite) | ⏳ | recall@10 ablation table |
-| 4 | ReAct agent + tools, then LangGraph migration | ⏳ | task success rate |
-| 5A | Public demo (FastAPI + Streamlit deployed) | ⏳ | demo URL, citation UI |
-| 5B | Observability, cost, streaming, caching | ⏳ | p50 latency, $/query (before/after) |
-| 6 | Security & protocols (prompt-injection red team, output guardrails, MCP server) | ⏳ | attack-success-rate ↓ |
-| 7 | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳ | per-item resume bullets |
+| Wave | Title                                                                                                                  | Status     | Headline metric                                              |
+| ---- | ---------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------ |
+| 0    | Foundation (closed LLM dispatch, scaffolding)                                                                          | ✅ shipped  | —                                                            |
+| 1a   | Postgres + pgvector schema + NVIDIA embedding provider                                                                 | ✅ shipped  | schema migration idempotent; `embed()` returns 1024d vectors |
+| 1b   | Dense retrieval + cited answer (pydantic) over local fixture                                                           | ⏳          | structured `Answer` with valid citations                     |
+| 1c   | EDGAR ingestion + CLI driver                                                                                           | ⏳          | `finrag ingest` + `finrag ask` end-to-end                    |
+| 1d   | NVIDIA NIM as cloud open-weight provider                                                                               | ⏳          | `LLM_PROVIDER=nvidia` round-trip                             |
+| 1.5  | Mini-eval (5–10 hand-graded items)                                                                                     | ⏳          | retrieval hit-rate, citation validity                        |
+| 2    | Eval harness (30–50 curated items)                                                                                     | ⏳          | recall@k, MRR, nDCG, faithfulness                            |
+| 3    | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite)                                           | ⏳          | recall@10 ablation table                                     |
+| 4    | ReAct agent + tools, then LangGraph migration                                                                          | ⏳          | task success rate                                            |
+| 5A   | Public demo (FastAPI + Streamlit deployed)                                                                             | ⏳          | demo URL, citation UI                                        |
+| 5B   | Observability, cost, streaming, caching                                                                                | ⏳          | p50 latency, $/query (before/after)                          |
+| 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ⏳          | attack-success-rate ↓                                        |
+| 7    | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳          | per-item resume bullets                                      |
 
 ## Stack (cloud APIs only — no local services)
 
