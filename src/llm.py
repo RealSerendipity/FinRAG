@@ -49,15 +49,20 @@ def chat(
     is passed separately (each provider has its own native slot for it).
     """
     provider = (provider or config.llm_provider()).lower()
-    if provider not in ("gemini", "anthropic", "openai"):
-        raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}")
+    if provider not in config._KNOWN_PROVIDERS:
+        raise ValueError(
+            f"Unknown LLM_PROVIDER: {provider!r}. "
+            f"Set LLM_PROVIDER to one of: {', '.join(config._KNOWN_PROVIDERS)}"
+        )
     model = model or config.llm_model(provider)
 
     if provider == "gemini":
         return _chat_gemini(messages, model, system, temperature, max_tokens)
     if provider == "anthropic":
         return _chat_anthropic(messages, model, system, temperature, max_tokens)
-    return _chat_openai(messages, model, system, temperature, max_tokens)
+    if provider == "openai":
+        return _chat_openai(messages, model, system, temperature, max_tokens)
+    raise AssertionError(f"provider {provider!r} passed validation but has no handler")
 
 
 # --------------------------------------------------------------------------- #
@@ -92,6 +97,8 @@ def _chat_gemini(
         system_instruction=system,
         temperature=temperature,
         max_output_tokens=max_tokens,
+        # Disable thinking: basic chat doesn't need it, and it breaks low max_tokens budgets.
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
     # Wave 5 will add explicit context caching via client.caches.create(...).
     resp = client.models.generate_content(model=model, contents=contents, config=cfg)

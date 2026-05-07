@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ----- LLM -----
-DEFAULT_LLM_PROVIDER = "gemini"
+_KNOWN_PROVIDERS = ("gemini", "anthropic", "openai")
+
 DEFAULT_LLM_MODELS = {
     "gemini": "gemini-2.5-flash",
     "anthropic": "claude-sonnet-4-6",
@@ -27,12 +28,20 @@ DEFAULT_JUDGE_MODELS = {
 
 
 def llm_provider() -> str:
-    return os.environ.get("LLM_PROVIDER", DEFAULT_LLM_PROVIDER).lower()
+    val = os.environ.get("LLM_PROVIDER", "").lower()
+    if not val:
+        raise RuntimeError(
+            "LLM_PROVIDER is not set. Add it to .env: LLM_PROVIDER=gemini|anthropic|openai"
+        )
+    return val
 
 
 def llm_model(provider: str | None = None) -> str:
     provider = provider or llm_provider()
-    return os.environ.get("LLM_MODEL") or DEFAULT_LLM_MODELS[provider]
+    # LLM_MODEL only overrides the active provider; other providers use their defaults.
+    if provider == os.environ.get("LLM_PROVIDER", "").lower():
+        return os.environ.get("LLM_MODEL") or DEFAULT_LLM_MODELS[provider]
+    return DEFAULT_LLM_MODELS[provider]
 
 
 def judge_provider() -> str:

@@ -37,12 +37,19 @@ def _assert_hello(resp: LLMResponse) -> None:
 )
 def test_chat_hello_world(provider: str, env_var: str) -> None:
     _skip_unless_key(env_var)
-    resp = chat(
-        messages=[{"role": "user", "content": "Reply with exactly the word: hello"}],
-        provider=provider,
-        temperature=0.0,
-        max_tokens=16,
-    )
+    try:
+        resp = chat(
+            messages=[{"role": "user", "content": "Reply with exactly the word: hello"}],
+            provider=provider,
+            temperature=0.0,
+            max_tokens=16,
+        )
+    except Exception as exc:
+        # Skip on quota / billing errors so CI isn't polluted by account state.
+        msg = str(exc).lower()
+        if any(k in msg for k in ("quota", "rate_limit", "insufficient_quota", "429")):
+            pytest.skip(f"{provider} quota/rate-limit: {exc}")
+        raise
     _assert_hello(resp)
     assert resp.provider == provider
 
