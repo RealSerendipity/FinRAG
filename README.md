@@ -26,7 +26,7 @@ agent tools.
 | 0    | Foundation (closed LLM dispatch, scaffolding)                                                                          | ✅ shipped | —                                                            |
 | 1a   | Postgres + pgvector schema + NVIDIA embedding provider(Asymmetric model for RAG)                                       | ✅ shipped | schema migration idempotent; `embed()` returns 1024d vectors |
 | 1b   | Dense retrieval + cited answer (pydantic) over local fixture                                                           | ✅ shipped | structured `Answer` with valid citations                     |
-| 1c   | EDGAR ingestion + CLI driver                                                                                           | ⏳         | `finrag ingest` + `finrag ask` end-to-end                    |
+| 1c   | EDGAR ingestion + CLI driver                                                                                           | ✅ shipped | `finrag ingest` + `finrag ask` end-to-end                    |
 | 1d   | NVIDIA NIM as cloud open-weight provider                                                                               | ⏳         | `LLM_PROVIDER=nvidia` round-trip                             |
 | 1.5  | Mini-eval (5–10 hand-graded items)                                                                                     | ⏳         | retrieval hit-rate, citation validity                        |
 | 2    | Eval harness (30–50 curated items)                                                                                     | ⏳         | recall@k, MRR, nDCG, faithfulness                            |
@@ -39,21 +39,21 @@ agent tools.
 
 ## Stack (cloud APIs only — no local services)
 
-| Layer                       | Primary                                                                 | Backup(s)                                    |
-| --------------------------- | ----------------------------------------------------------------------- | -------------------------------------------- |
-| LLM (closed)                | Google Gemini (`2.5-flash` / `-pro` / `-flash-lite`)                    | Anthropic Claude, OpenAI                     |
-| LLM (open-weight via cloud) | NVIDIA NIM / build.nvidia.com (Llama / Qwen / DeepSeek / Nemotron) — *planned, Wave 1d* | Together, Groq                               |
-| Embedding                   | NVIDIA NeMo Retriever `nvidia/nv-embedqa-e5-v5` (768d target)           | Gemini `gemini-embedding-001`, Voyage, Cohere |
-| Reranker                    | NVIDIA NeMo Retriever `nvidia/nv-rerankqa-mistral-4b-v3`                | Jina `rerank-v2-multilingual`, Cohere         |
-| Vector + lexical store      | **Neon Postgres + pgvector + tsvector FTS**                             | Supabase, Aiven                              |
-| Agent                       | hand-written ReAct → LangGraph (Wave 4)                                 | LlamaIndex (Wave 7 comparison)               |
-| Eval                        | hand-written + ragas; NVIDIA NIM judge after Wave 1d                    | Gemini judge fallback                        |
-| Tracing                     | Langfuse Cloud                                                          | —                                            |
-| Output validation           | pydantic                                                                | —                                            |
-| Guardrails (Wave 6)         | NVIDIA NemoGuard + custom regex/PII                                     | OpenAI Moderation                            |
-| MCP (Wave 6)                | official `mcp` Python SDK as server                                     | —                                            |
-| API / UI                    | FastAPI + Streamlit                                                     | —                                            |
-| Deployment                  | Render / Railway / Fly.io free tier; Cloudflare Worker for edge demo    | —                                            |
+| Layer                       | Primary                                                                                 | Backup(s)                                     |
+| --------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------- |
+| LLM (closed)                | Google Gemini (`2.5-flash` / `-pro` / `-flash-lite`)                                    | Anthropic Claude, OpenAI                      |
+| LLM (open-weight via cloud) | NVIDIA NIM / build.nvidia.com (Llama / Qwen / DeepSeek / Nemotron) — *planned, Wave 1d* | Together, Groq                                |
+| Embedding                   | NVIDIA NeMo Retriever `nvidia/nv-embedqa-e5-v5` (1024d target)                          | Gemini `gemini-embedding-001`, Voyage, Cohere |
+| Reranker                    | NVIDIA NeMo Retriever `nvidia/nv-rerankqa-mistral-4b-v3`                                | Jina `rerank-v2-multilingual`, Cohere         |
+| Vector + lexical store      | **Neon Postgres + pgvector + tsvector FTS**                                             | Supabase, Aiven                               |
+| Agent                       | hand-written ReAct → LangGraph (Wave 4)                                                 | LlamaIndex (Wave 7 comparison)                |
+| Eval                        | hand-written + ragas; NVIDIA NIM judge after Wave 1d                                    | Gemini judge fallback                         |
+| Tracing                     | Langfuse Cloud                                                                          | —                                             |
+| Output validation           | pydantic                                                                                | —                                             |
+| Guardrails (Wave 6)         | NVIDIA NemoGuard + custom regex/PII                                                     | OpenAI Moderation                             |
+| MCP (Wave 6)                | official `mcp` Python SDK as server                                                     | —                                             |
+| API / UI                    | FastAPI + Streamlit                                                                     | —                                             |
+| Deployment                  | Render / Railway / Fly.io free tier; Cloudflare Worker for edge demo                    | —                                             |
 
 Provider switching is environment-controlled (`LLM_PROVIDER`,
 `EMBEDDING_PROVIDER`, `RERANKER_PROVIDER`) and implemented as single-file
@@ -64,8 +64,14 @@ Provider switching is environment-controlled (`LLM_PROVIDER`,
 ```bash
 uv sync --group dev
 cp .env.example .env
-# fill in GEMINI_API_KEY at minimum for Wave 0
+# fill in GEMINI_API_KEY + DATABASE_URL + NVIDIA_API_KEY
+
+# Run tests
 uv run pytest
+
+# Ingest a filing and ask a question (Wave 1c)
+uv run finrag ingest --tickers AAPL --year 2024
+uv run finrag ask --ticker AAPL --year 2024 "What was Apple's R&D expense?"
 ```
 
 ## Layout

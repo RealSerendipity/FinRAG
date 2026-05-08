@@ -6,11 +6,16 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "anthropic>=0.39.0",
+    "click>=8.0",
     "google-genai>=0.3.0",
     "openai>=1.50.0",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.0.1",
+    "tiktoken>=0.7",
 ]
+
+[project.scripts]
+finrag = "src.cli:cli"
 
 [dependency-groups]
 dev = [
