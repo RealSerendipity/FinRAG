@@ -3,7 +3,7 @@
 Public surface
 --------------
 - `chunk_text(text, max_tokens)` — split text into token-bounded chunks
-- `ingest(ticker, year)` — full pipeline; returns number of chunks stored
+- `ingest(ticker, fiscal_year)` — full pipeline; returns number of chunks stored
 """
 
 from __future__ import annotations
@@ -26,36 +26,47 @@ _EMBED_BATCH = 32
 def chunk_text(text: str, max_tokens: int = _MAX_TOKENS) -> list[str]:
     """Split text into chunks where each chunk is at most max_tokens.
 
-    Splits on paragraph boundaries first; falls back to token-level split for
-    paragraphs that are themselves too long (common in EDGAR table sections).
+    Splits on paragraph boundaries (\\n\\n) first; falls back to token-level
+    split for paragraphs that are themselves too long.
     """
+    if max_tokens <= 0:
+        raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks: list[str] = []
     current: list[str] = []
     current_count = 0
+
+    def _flush() -> None:
+        nonlocal current, current_count
+        if current:
+            chunks.append(" ".join(current))
+            current, current_count = [], 0
 
     for para in paragraphs:
         tokens = _ENCODING.encode(para)
         count = len(tokens)
 
         if count > max_tokens:
-            # Flush current buffer before splitting the oversized paragraph.
-            if current:
-                chunks.append(" ".join(current))
-                current, current_count = [], 0
-            for start in range(0, count, max_tokens):
-                chunks.append(_ENCODING.decode(tokens[start : start + max_tokens]))
-        elif current_count + count > max_tokens:
-            chunks.append(" ".join(current))
-            current = [para]
-            current_count = count
+            # Flush buffer before splitting the oversized paragraph.
+            _flush()
+            # Overlap of 10% of max_tokens to preserve cross-boundary context.
+            stride = max(1, int(max_tokens * 0.9))
+            start = 0
+            while start < count:
+                window = tokens[start : start + max_tokens]
+                chunks.append(_ENCODING.decode(window))
+                start += stride
         else:
+            # Would the joined string exceed max_tokens?  Check the real encoded
+            # length of the candidate join, not just the accumulated count.
+            candidate = " ".join(current + [para])
+            if len(_ENCODING.encode(candidate)) > max_tokens:
+                _flush()
             current.append(para)
-            current_count += count
+            current_count = len(_ENCODING.encode(" ".join(current)))
 
-    if current:
-        chunks.append(" ".join(current))
-
+    _flush()
     return [c for c in chunks if c.strip()]
 
 
@@ -66,18 +77,27 @@ def _embed_batched(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-def ingest(ticker: str, year: int) -> int:
+def ingest(ticker: str, fiscal_year: int) -> int:
     """Fetch, chunk, embed, and upsert a 10-K filing.
+
+    `fiscal_year` is matched against the filing's period-of-report (reportDate),
+    not the calendar year the document was filed.
 
     Returns the number of chunks written to the database.
     """
-    filing = fetch_10k(ticker, year)
-    period = f"FY{year}"
+    filing = fetch_10k(ticker, fiscal_year)
+    period = f"FY{fiscal_year}"
     texts = chunk_text(filing["text"])
     if not texts:
-        raise ValueError(f"No text extracted from {ticker} {year} 10-K")
+        raise ValueError(f"No text extracted from {ticker} FY{fiscal_year} 10-K")
 
     vectors = _embed_batched(texts)
+
+    # Guard: embedding API must return exactly one vector per chunk.
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"Embedding count mismatch: got {len(vectors)} vectors for {len(texts)} chunks"
+        )
 
     with get_conn() as conn:
         row = conn.execute(

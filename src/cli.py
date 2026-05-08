@@ -8,6 +8,8 @@ Usage
 
 from __future__ import annotations
 
+import sys
+
 import click
 
 from src.ingest import ingest as _ingest
@@ -21,13 +23,26 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--tickers", required=True, help="Comma-separated tickers, e.g. AAPL,MSFT")
-@click.option("--year", required=True, type=int, help="Calendar year of filing, e.g. 2024")
+@click.option("--year", required=True, type=int, help="Fiscal year (matched on period-of-report), e.g. 2024")
 def ingest(tickers: str, year: int) -> None:
     """Fetch and ingest 10-K filings into the vector store."""
-    for ticker in [t.strip().upper() for t in tickers.split(",") if t.strip()]:
-        click.echo(f"Ingesting {ticker} {year}...", nl=False)
-        n = _ingest(ticker, year)
-        click.echo(f" done ({n} chunks)")
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        raise click.UsageError("--tickers must contain at least one ticker symbol")
+
+    failed: list[str] = []
+    for ticker in ticker_list:
+        click.echo(f"Ingesting {ticker} FY{year}...", nl=False)
+        try:
+            n = _ingest(ticker, year)
+            click.echo(f" done ({n} chunks)")
+        except Exception as exc:
+            click.echo(f" FAILED: {exc}", err=True)
+            failed.append(ticker)
+
+    if failed:
+        click.echo(f"\nFailed tickers: {', '.join(failed)}", err=True)
+        sys.exit(1)
 
 
 @cli.command()

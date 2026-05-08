@@ -10,7 +10,7 @@ import tiktoken
 from src.ingest import chunk_text
 
 _ENCODING = tiktoken.get_encoding("cl100k_base")
-_MAX = 100  # small limit keeps unit tests fast; production default is 500
+_MAX = 100  # small limit keeps unit tests fast; production default is 300
 
 
 def test_chunk_text_size():
@@ -43,6 +43,24 @@ def test_chunk_text_empty():
     """Empty input returns empty list."""
     assert chunk_text("") == []
     assert chunk_text("   \n\n  ") == []
+
+
+def test_chunk_text_invalid_max_tokens():
+    """max_tokens <= 0 must raise ValueError."""
+    with pytest.raises(ValueError, match="max_tokens"):
+        chunk_text("some text", max_tokens=0)
+    with pytest.raises(ValueError, match="max_tokens"):
+        chunk_text("some text", max_tokens=-1)
+
+
+def test_chunk_text_paragraph_boundaries():
+    """Paragraph-split text should produce multiple chunks respecting \\n\\n."""
+    short_paras = "\n\n".join([f"Para {i}." for i in range(10)])
+    chunks = chunk_text(short_paras, max_tokens=_MAX)
+    # All chunks combined should cover all paragraph text.
+    combined = " ".join(chunks)
+    for i in range(10):
+        assert f"Para {i}." in combined
 
 
 @pytest.mark.skipif(
