@@ -140,6 +140,9 @@ class _TextExtractor(HTMLParser):
             self._skip_depth += 1
             return
         if self._skip_depth:
+            # Count every nested non-void open tag so its close tag can balance the depth.
+            if tag not in _SELF_CLOSE_TAGS:
+                self._skip_depth += 1
             return
         if tag in _SELF_CLOSE_TAGS:
             self._parts.append("\n\n")
@@ -147,10 +150,9 @@ class _TextExtractor(HTMLParser):
             self._parts.append("\n\n")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in ("script", "style"):
-            self._skip_depth = max(0, self._skip_depth - 1)
-            return
         if self._skip_depth:
+            # Every close tag balances one open tag inside the skip region.
+            self._skip_depth = max(0, self._skip_depth - 1)
             return
         if tag in _BLOCK_TAGS:
             self._parts.append("\n\n")
