@@ -42,10 +42,12 @@ BEGIN
             DROP COLUMN IF EXISTS ticker,
             DROP COLUMN IF EXISTS filing_type;
 
-        -- 7. Replace the old index (was on ticker/period) with the normalized equivalent.
+        -- 7. Drop the old index (was on ticker/period); replacement created unconditionally below.
         DROP INDEX IF EXISTS documents_lookup_idx;
-        CREATE INDEX IF NOT EXISTS documents_company_period_idx ON documents (company_id, period);
-        CREATE INDEX IF NOT EXISTS companies_ticker_idx         ON companies (ticker);
 
     END IF;
 END $$;
+
+-- Always ensure this index exists — needed by both fresh installs (company_id created in 001)
+-- and migrated databases (company_id added by the block above).
+CREATE INDEX IF NOT EXISTS documents_company_period_idx ON documents (company_id, period);
