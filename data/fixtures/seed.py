@@ -33,30 +33,48 @@ def seed() -> None:
     embeddings = embed(CHUNKS, input_type="passage")
 
     with db.get_conn() as conn:
+        # Upsert company — DEMO has no real CIK.
+        row = conn.execute(
+            """
+            INSERT INTO companies (ticker, cik, name)
+            VALUES ('DEMO', NULL, 'DEMO Corp')
+            ON CONFLICT (ticker) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+            """,
+        ).fetchone()
+        company_id = row[0]
+
+        # Resolve filing_type_id — seeded by migration.
+        row = conn.execute(
+            "SELECT id FROM filing_types WHERE code = '10-K'",
+        ).fetchone()
+        filing_type_id = row[0]
+
         # Upsert document — idempotent via ON CONFLICT.
         row = conn.execute(
             """
-            INSERT INTO documents (ticker, filing_type, period, accession)
-            VALUES ('DEMO', '10-K', 'FY2024', 'demo-accession-0001')
+            INSERT INTO documents (company_id, filing_type_id, period, accession)
+            VALUES (%s, %s, 'FY2024', 'demo-accession-0001')
             ON CONFLICT (accession) DO UPDATE SET
-                ticker = EXCLUDED.ticker,
-                filing_type = EXCLUDED.filing_type,
-                period = EXCLUDED.period
+                company_id     = EXCLUDED.company_id,
+                filing_type_id = EXCLUDED.filing_type_id,
+                period         = EXCLUDED.period
             RETURNING id
             """,
+            (company_id, filing_type_id),
         ).fetchone()
         doc_id = row[0]
 
         # Delete existing chunks for this document to stay idempotent.
         conn.execute("DELETE FROM chunks WHERE document_id = %s", (doc_id,))
 
-        for idx, (text, vec) in enumerate(zip(CHUNKS, embeddings)):
+        for idx, (text, embedding) in enumerate(zip(CHUNKS, embeddings)):
             conn.execute(
                 """
                 INSERT INTO chunks (document_id, chunk_index, content, tokens, embedding)
                 VALUES (%s, %s, %s, %s, %s::vector)
                 """,
-                (doc_id, idx, text, len(text.split()), vec),
+                (doc_id, idx, text, len(text.split()), embedding),
             )
 
         conn.commit()
