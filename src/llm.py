@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import config
+from src.clients import gemini as gemini_client
+from src.clients import anthropic as anthropic_client
+from src.clients import openai as openai_client
 
 
 @dataclass
@@ -75,34 +78,15 @@ def _chat_gemini(
     temperature: float,
     max_tokens: int,
 ) -> LLMResponse:
-    from google import genai
-    from google.genai import types
-
     api_key = config.api_key("gemini")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not set")
 
-    client = genai.Client(api_key=api_key)
-
-    contents = [
-        {
-            # Gemini uses "model" instead of "assistant".
-            "role": "model" if m["role"] == "assistant" else m["role"],
-            "parts": [{"text": m["content"]}],
-        }
-        for m in messages
-    ]
-
-    cfg = types.GenerateContentConfig(
-        system_instruction=system,
-        temperature=temperature,
-        max_output_tokens=max_tokens,
-        # Disable thinking: basic chat doesn't need it, and it breaks low max_tokens budgets.
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
+    resp = gemini_client.generate(
+        messages, model,
+        api_key=api_key, system=system,
+        temperature=temperature, max_tokens=max_tokens,
     )
-    # Wave 5 will add explicit context caching via client.caches.create(...).
-    resp = client.models.generate_content(model=model, contents=contents, config=cfg)
-
     meta = getattr(resp, "usage_metadata", None)
     usage = (
         {
@@ -132,24 +116,15 @@ def _chat_anthropic(
     temperature: float,
     max_tokens: int,
 ) -> LLMResponse:
-    from anthropic import Anthropic
-
     api_key = config.api_key("anthropic")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
 
-    client = Anthropic(api_key=api_key)
-    # Wave 5 will add cache_control={"type": "ephemeral"} on system + tool blocks.
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "messages": messages,
-    }
-    if system:
-        kwargs["system"] = system
-
-    resp = client.messages.create(**kwargs)
+    resp = anthropic_client.complete(
+        messages, model,
+        api_key=api_key, system=system,
+        temperature=temperature, max_tokens=max_tokens,
+    )
     text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
     usage = {
         "input_tokens": getattr(resp.usage, "input_tokens", 0),
@@ -170,22 +145,14 @@ def _chat_openai(
     temperature: float,
     max_tokens: int,
 ) -> LLMResponse:
-    from openai import OpenAI
-
     api_key = config.api_key("openai")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
-    client = OpenAI(api_key=api_key)
-    payload = list(messages)
-    if system:
-        payload = [{"role": "system", "content": system}, *payload]
-
-    resp = client.chat.completions.create(
-        model=model,
-        messages=payload,
-        temperature=temperature,
-        max_tokens=max_tokens,
+    resp = openai_client.complete(
+        messages, model,
+        api_key=api_key, system=system,
+        temperature=temperature, max_tokens=max_tokens,
     )
     choice = resp.choices[0]
     usage = {
