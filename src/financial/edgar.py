@@ -11,21 +11,11 @@ Public surface
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from html.parser import HTMLParser
 
-import httpx
-
-# EDGAR requires a real company/contact User-Agent.  Override via EDGAR_USER_AGENT env var.
-_USER_AGENT = os.getenv("EDGAR_USER_AGENT", "finrag/0.1 finrag-user@example.com")
-_HEADERS = {"User-Agent": _USER_AGENT}
-
-_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
-_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
-_SUBMISSIONS_EXTRA_URL = "https://data.sec.gov/submissions/{name}"
-_ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{doc}"
+from src.clients import edgar as edgar_client
 
 _ticker_info_cache: dict[str, dict] | None = None  # {TICKER: {"cik": int, "name": str}}
 
@@ -36,22 +26,6 @@ _BLOCK_TAGS = frozenset(
 _SELF_CLOSE_TAGS = frozenset(["br", "hr"])
 
 
-def _get(url: str, *, retries: int = 3) -> bytes:
-    """Fetch URL with simple exponential back-off on 429 / 5xx."""
-    delay = 1.0
-    for attempt in range(retries):
-        resp = httpx.get(url, headers=_HEADERS, timeout=60, follow_redirects=True)
-        if resp.status_code == 429 or resp.status_code >= 500:
-            if attempt < retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                continue
-        resp.raise_for_status()
-        return resp.content
-    resp.raise_for_status()  # raise on final attempt
-    return resp.content  # unreachable but satisfies type checker
-
-
 def company_info_for_ticker(ticker: str) -> dict:
     """Return {"cik": int, "name": str} for a ticker, using a cached company list.
 
@@ -59,7 +33,7 @@ def company_info_for_ticker(ticker: str) -> dict:
     """
     global _ticker_info_cache
     if _ticker_info_cache is None:
-        data = json.loads(_get(_TICKERS_URL))
+        data = json.loads(edgar_client.get_tickers())
         _ticker_info_cache = {
             v["ticker"].upper(): {"cik": int(v["cik_str"]), "name": v["title"]}
             for v in data.values()
@@ -79,8 +53,7 @@ def _iter_filing_pages(subs: dict) -> list[dict]:
     """Yield the recent filings dict, then any paginated historical filing pages."""
     pages = [subs["filings"]["recent"]]
     for extra in subs["filings"].get("files", []):
-        extra_url = _SUBMISSIONS_EXTRA_URL.format(name=extra["name"])
-        extra_data = json.loads(_get(extra_url))
+        extra_data = json.loads(edgar_client.get_submissions_page(extra["name"]))
         pages.append(extra_data)
     return pages
 
@@ -92,7 +65,7 @@ def fetch_10k(ticker: str, fiscal_year: int) -> dict:
     Raises ValueError if no matching 10-K is found.
     """
     cik = cik_for_ticker(ticker)
-    subs = json.loads(_get(_SUBMISSIONS_URL.format(cik=cik)))
+    subs = json.loads(edgar_client.get_submissions(cik))
 
     for page in _iter_filing_pages(subs):
         forms: list[str] = page["form"]
@@ -112,10 +85,10 @@ def fetch_10k(ticker: str, fiscal_year: int) -> dict:
             accession = accessions[i]  # e.g. "0000320193-24-000073"
             accession_nodash = accession.replace("-", "")
             primary_doc = primary_docs[i]
-            raw_url = _ARCHIVE_URL.format(cik=cik, accession_nodash=accession_nodash, doc=primary_doc)
+            raw_url = edgar_client.document_url(cik, accession_nodash, primary_doc)
 
             time.sleep(0.1)  # EDGAR courtesy rate limit
-            raw_bytes = _get(raw_url)
+            raw_bytes = edgar_client.get_document(cik, accession_nodash, primary_doc)
             # Use httpx-detected encoding, fall back to latin-1 (common for older SEC filings).
             encoding = _detect_encoding(raw_bytes)
             raw_text = raw_bytes.decode(encoding, errors="replace")
