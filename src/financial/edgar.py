@@ -157,8 +157,12 @@ class _TextExtractor(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if self._skip_depth:
-            # Every close tag balances one open tag inside the skip region.
-            self._skip_depth = max(0, self._skip_depth - 1)
+            # Void elements written as self-closing (<br/>, <img/>) cause HTMLParser to
+            # call handle_startendtag → handle_starttag + handle_endtag.  handle_starttag
+            # correctly skips incrementing for void tags, so handle_endtag must also skip
+            # decrementing — otherwise the depth goes negative and hidden text leaks out.
+            if tag not in _VOID_TAGS:
+                self._skip_depth = max(0, self._skip_depth - 1)
             return
         if tag in _BLOCK_TAGS:
             self._parts.append("\n\n")
