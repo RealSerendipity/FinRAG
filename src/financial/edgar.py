@@ -24,6 +24,11 @@ _BLOCK_TAGS = frozenset(
     "blockquote pre ul ol dl dt dd table caption".split()
 )
 _SELF_CLOSE_TAGS = frozenset(["br", "hr"])
+# All HTML void elements — they have no closing tag, so handle_endtag is never called for them.
+# Must not increment _skip_depth for these when inside a hidden region.
+_VOID_TAGS = frozenset(
+    "area base br col embed hr img input link meta param source track wbr".split()
+)
 
 
 def company_info_for_ticker(ticker: str) -> dict:
@@ -141,7 +146,8 @@ class _TextExtractor(HTMLParser):
             return
         if self._skip_depth:
             # Count every nested non-void open tag so its close tag can balance the depth.
-            if tag not in _SELF_CLOSE_TAGS:
+            # Use _VOID_TAGS (not _SELF_CLOSE_TAGS) — void elements never fire handle_endtag.
+            if tag not in _VOID_TAGS:
                 self._skip_depth += 1
             return
         if tag in _SELF_CLOSE_TAGS:
