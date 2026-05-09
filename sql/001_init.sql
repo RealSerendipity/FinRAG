@@ -54,6 +54,5 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS chunks_doc_idx        ON chunks (document_id);
 CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw ON chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS chunks_tsv_gin        ON chunks USING GIN (tsv);
-CREATE INDEX IF NOT EXISTS companies_ticker_idx  ON companies (ticker);
--- documents_company_period_idx is created by 002_migrate_normalize_documents.sql
--- because it references company_id, which may not yet exist on old databases.
+CREATE INDEX IF NOT EXISTS companies_ticker_idx         ON companies (ticker);
+CREATE INDEX IF NOT EXISTS documents_company_period_idx ON documents (company_id, period);
