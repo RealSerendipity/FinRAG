@@ -12,7 +12,7 @@ import tiktoken
 
 from src.db import get_conn
 from src.embed import embed
-from src.financial.edgar import fetch_10k
+from src.financial.edgar import company_info_for_ticker, fetch_10k
 
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 # NVIDIA nv-embedqa-e5-v5 has a 512-token context window (WordPiece tokenizer).
@@ -85,6 +85,8 @@ def ingest(ticker: str, fiscal_year: int) -> int:
 
     Returns the number of chunks written to the database.
     """
+    # HTTP and CPU work outside the DB transaction.
+    company = company_info_for_ticker(ticker)
     filing = fetch_10k(ticker, fiscal_year)
     period = f"FY{fiscal_year}"
     texts = chunk_text(filing["text"])
@@ -99,10 +101,38 @@ def ingest(ticker: str, fiscal_year: int) -> int:
             f"Embedding count mismatch: got {len(vectors)} vectors for {len(texts)} chunks"
         )
 
+    # Single atomic transaction: company upsert → filing_type resolve → document upsert → chunks.
+    # psycopg v3 with-block auto-commits on success, auto-rollbacks on any exception.
     with get_conn() as conn:
+        # Upsert company — updates CIK/name if ticker already exists.
         row = conn.execute(
             """
-            INSERT INTO documents (ticker, filing_type, period, filed_at, accession, raw_url)
+            INSERT INTO companies (ticker, cik, name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (ticker) DO UPDATE
+                SET cik  = COALESCE(EXCLUDED.cik,  companies.cik),
+                    name = COALESCE(EXCLUDED.name, companies.name)
+            RETURNING id
+            """,
+            (ticker.upper(), company["cik"], company["name"]),
+        ).fetchone()
+        company_id = row[0]
+
+        # Resolve filing_type_id — seeded by migration; upsert handles any gap defensively.
+        # DO UPDATE SET code = EXCLUDED.code is a no-op that lets RETURNING work on conflict.
+        row = conn.execute(
+            """
+            INSERT INTO filing_types (code)
+            VALUES ('10-K')
+            ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
+            RETURNING id
+            """,
+        ).fetchone()
+        filing_type_id = row[0]
+
+        row = conn.execute(
+            """
+            INSERT INTO documents (company_id, filing_type_id, period, filed_at, accession, raw_url)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (accession) DO UPDATE
                 SET filed_at = EXCLUDED.filed_at,
@@ -110,8 +140,8 @@ def ingest(ticker: str, fiscal_year: int) -> int:
             RETURNING id
             """,
             (
-                ticker.upper(),
-                "10-K",
+                company_id,
+                filing_type_id,
                 period,
                 filing["filed_at"],
                 filing["accession"],
