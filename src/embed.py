@@ -1,27 +1,14 @@
-"""Embedding provider — Wave 1a: NVIDIA NeMo Retriever only.
+"""Embedding provider — NVIDIA NeMo Retriever.
 
 Public surface
 --------------
-- `embed(texts)` — returns list of float vectors, one per input text
+- `embed(texts, *, input_type)` — returns list of float vectors, one per input text
 """
 
 from __future__ import annotations
 
-from openai import OpenAI
-
-from . import config
-
-_client: OpenAI | None = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI(
-            api_key=config.api_key("nvidia"),
-            base_url=config.nvidia_base_url(),
-        )
-    return _client
+from src import config
+from src.clients import nvidia as nvidia_client
 
 
 def embed(texts: list[str], *, input_type: str = "passage") -> list[list[float]]:
@@ -32,14 +19,10 @@ def embed(texts: list[str], *, input_type: str = "passage") -> list[list[float]]
     """
     if not texts:
         return []
-
-    client = _get_client()
-    model = config.embedding_model()
-    resp = client.embeddings.create(
-        input=texts,
-        model=model,
-        extra_body={"input_type": input_type},
+    return nvidia_client.create_embeddings(
+        texts,
+        api_key=config.api_key("nvidia"),
+        base_url=config.nvidia_base_url(),
+        model=config.embedding_model(),
+        input_type=input_type,
     )
-    # Sort by index to guarantee order matches input.
-    items = sorted(resp.data, key=lambda e: e.index)
-    return [item.embedding for item in items]
