@@ -153,7 +153,7 @@ def ingest(ticker: str, fiscal_year: int) -> int:
         # Replace all chunks so re-ingestion is idempotent.
         conn.execute("DELETE FROM chunks WHERE document_id = %s", (doc_id,))
 
-        for idx, (text, vector) in enumerate(zip(texts, vectors)):
+        for idx, (text, vector) in enumerate(zip(texts, vectors, strict=True)):
             token_count = len(_ENCODING.encode(text))
             conn.execute(
                 """

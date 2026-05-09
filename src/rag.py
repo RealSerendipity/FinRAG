@@ -11,7 +11,6 @@ import json
 import re
 from pathlib import Path
 
-from src import config
 from src.financial.schemas import Answer
 from src.llm import chat
 from src.retrieve import retrieve

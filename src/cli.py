@@ -23,7 +23,8 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--tickers", required=True, help="Comma-separated tickers, e.g. AAPL,MSFT")
-@click.option("--year", required=True, type=int, help="Fiscal year (matched on period-of-report), e.g. 2024")
+@click.option("--year", required=True, type=int,
+              help="Fiscal year (matched on period-of-report), e.g. 2024")
 def ingest(tickers: str, year: int) -> None:
     """Fetch and ingest 10-K filings into the vector store."""
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]

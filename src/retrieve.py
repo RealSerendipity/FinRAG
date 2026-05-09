@@ -7,7 +7,7 @@ Public surface
 
 from __future__ import annotations
 
-from src import config, db
+from src import db
 from src.embed import embed
 
 
