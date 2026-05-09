@@ -2,6 +2,7 @@
 
 Public surface
 --------------
+- `company_info_for_ticker(ticker)` — returns {"cik": int, "name": str}
 - `cik_for_ticker(ticker)` — returns the integer CIK for a ticker symbol
 - `fetch_10k(ticker, fiscal_year)` — returns {accession, filed_at, report_date, raw_url, text}
   for the 10-K whose period-of-report falls in `fiscal_year`
@@ -26,7 +27,7 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 _SUBMISSIONS_EXTRA_URL = "https://data.sec.gov/submissions/{name}"
 _ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{doc}"
 
-_ticker_cik_cache: dict[str, int] | None = None
+_ticker_info_cache: dict[str, dict] | None = None  # {TICKER: {"cik": int, "name": str}}
 
 _BLOCK_TAGS = frozenset(
     "p div h1 h2 h3 h4 h5 h6 li tr td th section article header footer "
@@ -51,16 +52,27 @@ def _get(url: str, *, retries: int = 3) -> bytes:
     return resp.content  # unreachable but satisfies type checker
 
 
-def cik_for_ticker(ticker: str) -> int:
-    """Return the integer CIK for a ticker symbol, using a cached company list."""
-    global _ticker_cik_cache
-    if _ticker_cik_cache is None:
+def company_info_for_ticker(ticker: str) -> dict:
+    """Return {"cik": int, "name": str} for a ticker, using a cached company list.
+
+    Raises ValueError if the ticker is not found in the EDGAR company list.
+    """
+    global _ticker_info_cache
+    if _ticker_info_cache is None:
         data = json.loads(_get(_TICKERS_URL))
-        _ticker_cik_cache = {v["ticker"].upper(): int(v["cik_str"]) for v in data.values()}
-    cik = _ticker_cik_cache.get(ticker.upper())
-    if cik is None:
+        _ticker_info_cache = {
+            v["ticker"].upper(): {"cik": int(v["cik_str"]), "name": v["title"]}
+            for v in data.values()
+        }
+    info = _ticker_info_cache.get(ticker.upper())
+    if info is None:
         raise ValueError(f"Ticker {ticker!r} not found in EDGAR company list")
-    return cik
+    return info
+
+
+def cik_for_ticker(ticker: str) -> int:
+    """Return the integer CIK for a ticker symbol."""
+    return company_info_for_ticker(ticker)["cik"]
 
 
 def _iter_filing_pages(subs: dict) -> list[dict]:
@@ -93,14 +105,14 @@ def fetch_10k(ticker: str, fiscal_year: int) -> dict:
             if form != "10-K":
                 continue
             # Use reportDate (period-of-report) to match fiscal year, not filingDate.
-            rdate = report_dates[i] if i < len(report_dates) else ""
-            if not rdate or not rdate.startswith(str(fiscal_year)):
+            report_date = report_dates[i] if i < len(report_dates) else ""
+            if not report_date or not report_date.startswith(str(fiscal_year)):
                 continue
 
-            acc = accessions[i]  # e.g. "0000320193-24-000073"
-            acc_nodash = acc.replace("-", "")
-            doc = primary_docs[i]
-            raw_url = _ARCHIVE_URL.format(cik=cik, accession_nodash=acc_nodash, doc=doc)
+            accession = accessions[i]  # e.g. "0000320193-24-000073"
+            accession_nodash = accession.replace("-", "")
+            primary_doc = primary_docs[i]
+            raw_url = _ARCHIVE_URL.format(cik=cik, accession_nodash=accession_nodash, doc=primary_doc)
 
             time.sleep(0.1)  # EDGAR courtesy rate limit
             raw_bytes = _get(raw_url)
@@ -110,9 +122,9 @@ def fetch_10k(ticker: str, fiscal_year: int) -> dict:
             text = _strip_html(raw_text)
 
             return {
-                "accession": acc,
+                "accession": accession,
                 "filed_at": filing_dates[i],
-                "report_date": rdate,
+                "report_date": report_date,
                 "raw_url": raw_url,
                 "text": text,
             }
@@ -128,9 +140,9 @@ def _detect_encoding(raw: bytes) -> str:
         return "utf-16"
     # Check for charset in first 2 KB of HTML
     head = raw[:2048].decode("ascii", errors="replace")
-    m = re.search(r'charset=["\']?([\w-]+)', head, re.IGNORECASE)
-    if m:
-        return m.group(1)
+    charset_match = re.search(r'charset=["\']?([\w-]+)', head, re.IGNORECASE)
+    if charset_match:
+        return charset_match.group(1)
     return "utf-8"
 
 
