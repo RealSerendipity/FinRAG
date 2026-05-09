@@ -4,12 +4,15 @@ from __future__ import annotations
 from openai import OpenAI
 
 _client: OpenAI | None = None
+_client_key: tuple[str, str] | None = None  # (api_key, base_url)
 
 
 def _get_client(api_key: str, base_url: str) -> OpenAI:
-    global _client
-    if _client is None:
+    global _client, _client_key
+    key = (api_key, base_url)
+    if _client is None or _client_key != key:
         _client = OpenAI(api_key=api_key, base_url=base_url)
+        _client_key = key
     return _client
 
 

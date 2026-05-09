@@ -15,7 +15,7 @@ import re
 import time
 from html.parser import HTMLParser
 
-from src.clients import edgar as edgar_client
+from ..clients import edgar as edgar_client
 
 _ticker_info_cache: dict[str, dict] | None = None  # {TICKER: {"cik": int, "name": str}}
 

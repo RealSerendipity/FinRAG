@@ -7,8 +7,8 @@ Public surface
 
 from __future__ import annotations
 
-from src import config
-from src.clients import nvidia as nvidia_client
+from . import config
+from .clients import nvidia as nvidia_client
 
 
 def embed(texts: list[str], *, input_type: str = "passage") -> list[list[float]]:
@@ -19,9 +19,12 @@ def embed(texts: list[str], *, input_type: str = "passage") -> list[list[float]]
     """
     if not texts:
         return []
+    api_key = config.api_key("nvidia")
+    if not api_key:
+        raise RuntimeError("NVIDIA_API_KEY is not set")
     return nvidia_client.create_embeddings(
         texts,
-        api_key=config.api_key("nvidia"),
+        api_key=api_key,
         base_url=config.nvidia_base_url(),
         model=config.embedding_model(),
         input_type=input_type,

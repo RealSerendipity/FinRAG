@@ -20,9 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import config
-from src.clients import gemini as gemini_client
-from src.clients import anthropic as anthropic_client
-from src.clients import openai as openai_client
+from .clients import gemini as gemini_client
+from .clients import anthropic as anthropic_client
+from .clients import openai as openai_client
 
 
 @dataclass
