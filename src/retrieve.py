@@ -25,22 +25,19 @@ def retrieve(
     """
     query_vec = embed([query], input_type="query")[0]
 
-    # Build optional WHERE clause for metadata filters.
     filters: list[str] = []
-    params: list = [query_vec, top_k]
+    filter_params: list = []
 
     if ticker:
-        filters.append("d.ticker = %s")
-        params.insert(len(params) - 1, ticker)
+        filters.append("co.ticker = %s")
+        filter_params.append(ticker.upper())
     if period:
         filters.append("d.period = %s")
-        params.insert(len(params) - 1, period)
+        filter_params.append(period)
 
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
-
-    # params order: [query_vec, *filter_values, top_k]
-    # Rebuild with correct order: query_vec first for the <=> operator, top_k last for LIMIT.
-    ordered_params: list = [query_vec] + [p for p in params if p not in (query_vec, top_k)] + [top_k]
+    # params order: query_vec first (for <=>), then filter values, then top_k (for LIMIT).
+    params: list = [query_vec, *filter_params, top_k]
 
     sql = f"""
         SELECT
@@ -51,23 +48,24 @@ def retrieve(
             c.metadata,
             c.embedding <=> %s::vector AS distance
         FROM chunks c
-        JOIN documents d ON c.document_id = d.id
+        JOIN documents d  ON c.document_id = d.id
+        JOIN companies co ON d.company_id  = co.id
         {where}
         ORDER BY distance
         LIMIT %s
     """
 
     with db.get_conn() as conn:
-        rows = conn.execute(sql, ordered_params).fetchall()
+        rows = conn.execute(sql, params).fetchall()
 
     return [
         {
-            "id": r[0],
-            "content": r[1],
-            "section": r[2],
-            "chunk_index": r[3],
-            "metadata": r[4],
-            "distance": r[5],
+            "id": row[0],
+            "content": row[1],
+            "section": row[2],
+            "chunk_index": row[3],
+            "metadata": row[4],
+            "distance": row[5],
         }
-        for r in rows
+        for row in rows
     ]
