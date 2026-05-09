@@ -142,7 +142,8 @@ class _TextExtractor(HTMLParser):
         # Skip hidden elements
         style = attr_dict.get("style", "")
         if tag in ("script", "style") or "display:none" in style.replace(" ", ""):
-            self._skip_depth += 1
+            if tag not in _VOID_TAGS:
+                self._skip_depth += 1
             return
         if self._skip_depth:
             # Count every nested non-void open tag so its close tag can balance the depth.
