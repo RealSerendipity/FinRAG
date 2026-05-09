@@ -12,8 +12,8 @@ import sys
 
 import click
 
-from src.ingest import ingest as _ingest
-from src.rag import ask as _ask
+from src.ingest import ingest as run_ingest
+from src.rag import ask as run_ask
 
 
 @click.group()
@@ -34,8 +34,8 @@ def ingest(tickers: str, year: int) -> None:
     for ticker in ticker_list:
         click.echo(f"Ingesting {ticker} FY{year}...", nl=False)
         try:
-            n = _ingest(ticker, year)
-            click.echo(f" done ({n} chunks)")
+            chunk_count = run_ingest(ticker, year)
+            click.echo(f" done ({chunk_count} chunks)")
         except Exception as exc:
             click.echo(f" FAILED: {exc}", err=True)
             failed.append(ticker)
@@ -52,7 +52,7 @@ def ingest(tickers: str, year: int) -> None:
 def ask(ticker: str, year: int | None, question: str) -> None:
     """Ask a question over ingested filings and print the cited answer."""
     period = f"FY{year}" if year else None
-    answer = _ask(question, ticker=ticker.upper(), period=period)
+    answer = run_ask(question, ticker=ticker.upper(), period=period)
     click.echo(f"\n{answer.text}\n")
-    for c in answer.citations:
-        click.echo(f"  [chunk {c.chunk_id}] {c.quote!r}")
+    for citation in answer.citations:
+        click.echo(f"  [chunk {citation.chunk_id}] {citation.quote!r}")
