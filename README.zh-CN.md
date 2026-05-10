@@ -1,4 +1,4 @@
-# finrag
+# FinRAG
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -7,7 +7,7 @@
 
 ## 概览
 
-finrag 是一个作品集级别的金融 RAG 项目，用于在公司披露文件上回答投研问题，并提供可追溯 citation。
+FinRAG 是一个作品集级别的金融 RAG 项目，用于在公司披露文件上回答投研问题，并提供可追溯 citation。
 项目目标是从一个基于云 API 的简单 RAG baseline，逐步演进成具备 eval、observability、agent tools、公开 demo 和 MCP 集成的应用系统。
 
 目标读者可以从这个仓库里看到：系统如何 ingest filing、检索证据、校验结构化回答、度量质量，并通过 CLI、API、UI 和 agent tool 暴露完整工作流。

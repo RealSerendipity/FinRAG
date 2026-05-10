@@ -1,4 +1,4 @@
-# finrag
+# FinRAG
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -8,7 +8,7 @@ structured answers, citations, evaluation, and deployable AI product surfaces.
 
 ## Overview
 
-finrag is a portfolio-grade financial RAG project for answering investment
+FinRAG is a portfolio-grade financial RAG project for answering investment
 research questions over company filings with traceable citations. The project
 is designed to grow from a simple cloud-API-backed RAG baseline into an
 evaluated, observable, agentic system with retrieval experiments, financial
