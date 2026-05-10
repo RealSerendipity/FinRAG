@@ -2,7 +2,7 @@
 
 ## Fixture
 
-- Ticker: `DEMO`, Period: `FY2024` (fixture seed; legacy format predates YYYY-MM-DD period contract)
+- Ticker: `DEMO`, Period: `2024-12-31` (calendar year-end; fixture uses `datetime.date(2024, 12, 31)`)
 - 3 chunks seeded via `data/fixtures/seed.py`
 - document `id=1` in Neon Postgres
 

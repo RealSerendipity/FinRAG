@@ -9,13 +9,14 @@ so retrieve.py and rag.py can be tested without EDGAR ingestion.
 
 from __future__ import annotations
 
+import datetime
 import sys
 from pathlib import Path
 
 # Allow running as a script from the project root.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src import config, db  # noqa: E402 — path manipulation above required
+from src import db  # noqa: E402 — path manipulation above required
 from src.embed import embed  # noqa: E402
 
 CHUNKS = [
@@ -54,21 +55,21 @@ def seed() -> None:
         row = conn.execute(
             """
             INSERT INTO documents (company_id, filing_type_id, period, accession)
-            VALUES (%s, %s, 'FY2024', 'demo-accession-0001')
+            VALUES (%s, %s, %s, 'demo-accession-0001')
             ON CONFLICT (accession) DO UPDATE SET
                 company_id     = EXCLUDED.company_id,
                 filing_type_id = EXCLUDED.filing_type_id,
                 period         = EXCLUDED.period
             RETURNING id
             """,
-            (company_id, filing_type_id),
+            (company_id, filing_type_id, datetime.date(2024, 12, 31)),
         ).fetchone()
         doc_id = row[0]
 
         # Delete existing chunks for this document to stay idempotent.
         conn.execute("DELETE FROM chunks WHERE document_id = %s", (doc_id,))
 
-        for idx, (text, embedding) in enumerate(zip(CHUNKS, embeddings)):
+        for idx, (text, embedding) in enumerate(zip(CHUNKS, embeddings, strict=True)):
             conn.execute(
                 """
                 INSERT INTO chunks (document_id, chunk_index, content, tokens, embedding)
@@ -78,7 +79,7 @@ def seed() -> None:
             )
 
         conn.commit()
-    print(f"Seeded document id={doc_id} with {len(CHUNKS)} chunks (ticker=DEMO, period=FY2024)")
+    print(f"Seeded document id={doc_id} with {len(CHUNKS)} chunks (ticker=DEMO, period=2024-12-31)")
 
 
 if __name__ == "__main__":
