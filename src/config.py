@@ -73,6 +73,19 @@ def database_url() -> str:
     return val
 
 
+# ----- EDGAR -----
+
+def edgar_user_agent() -> str:
+    val = os.environ.get("EDGAR_USER_AGENT", "")
+    if not val:
+        raise RuntimeError(
+            "EDGAR_USER_AGENT is not set. "
+            "SEC EDGAR requires a real contact: add to .env\n"
+            "  EDGAR_USER_AGENT=finrag/0.1 your-email@example.com"
+        )
+    return val
+
+
 # ----- Embedding -----
 
 def embedding_model() -> str:

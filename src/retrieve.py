@@ -7,6 +7,8 @@ Public surface
 
 from __future__ import annotations
 
+import datetime
+
 from src import db
 from src.embed import embed
 
@@ -32,8 +34,15 @@ def retrieve(
         filters.append("co.ticker = %s")
         filter_params.append(ticker.upper())
     if period:
-        filters.append("d.period = %s")
-        filter_params.append(period)
+        # period is a DATE column; convert the caller's string to typed date objects.
+        # A bare 4-digit year expands to a date range; YYYY-MM-DD does an exact match.
+        if len(period) == 4 and period.isdigit():
+            yr = int(period)
+            filters.append("d.period >= %s AND d.period < %s")
+            filter_params.extend([datetime.date(yr, 1, 1), datetime.date(yr + 1, 1, 1)])
+        else:
+            filters.append("d.period = %s")
+            filter_params.append(datetime.date.fromisoformat(period))
 
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
     # params order: query_vec first (for <=>), then filter values, then top_k (for LIMIT).

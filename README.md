@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Retrieval + agent system over SEC filings (10-K / 10-Q / earnings calls). A
+Retrieval + agent system over SEC EDGAR filings (10-K / 10-Q / 8-K / 20-F / DEF 14A). A
 hands-on LLM application engineering project for financial research workflows,
 structured answers, citations, evaluation, and deployable AI product surfaces.
 

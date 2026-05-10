@@ -3,22 +3,25 @@
 Public surface
 --------------
 - `chunk_text(text, max_tokens)` — split text into token-bounded chunks
-- `ingest(ticker, fiscal_year)` — full pipeline; returns number of chunks stored
+- `ingest(ticker, *, form_type, period, fiscal_year)` — full pipeline; returns chunk count
 """
 
 from __future__ import annotations
+
+import datetime
 
 import tiktoken
 
 from src.db import get_conn
 from src.embed import embed
-from src.financial.edgar import company_info_for_ticker, fetch_10k
+from src.financial.edgar import company_info_for_ticker, fetch_filing
 
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 # NVIDIA nv-embedqa-e5-v5 has a 512-token context window (WordPiece tokenizer).
 # EDGAR filings contain dense numbers/codes that WordPiece splits more finely
 # than cl100k_base (observed ratio ~1.4-1.5x).  A 300-token cl100k budget
 # reliably stays under the 512 NVIDIA limit.
+# 300 cl100k tokens ≈ 450 WordPiece tokens
 _MAX_TOKENS = 300
 _EMBED_BATCH = 32
 
@@ -77,21 +80,43 @@ def _embed_batched(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-def ingest(ticker: str, fiscal_year: int) -> int:
-    """Fetch, chunk, embed, and upsert a 10-K filing.
+def _build_search_period(fiscal_year: int | None, period: str | None) -> str:
+    """Build the EDGAR search period string (used only to locate the filing, not for storage).
 
-    `fiscal_year` is matched against the filing's period-of-report (reportDate),
-    not the calendar year the document was filed.
+    The stored period is always filing["report_date"] (the actual YYYY-MM-DD from EDGAR).
+    """
+    if period:
+        return period
+    if fiscal_year is not None:
+        return f"FY{fiscal_year}"
+    raise ValueError("Either period or fiscal_year must be provided")
 
+
+def ingest(
+    ticker: str,
+    *,
+    form_type: str = "10-K",
+    period: str | None = None,
+    fiscal_year: int | None = None,
+) -> int:
+    """Fetch, chunk, embed, and upsert a SEC filing.
+
+    Supported form types: 10-K, 10-Q, 8-K, 20-F, DEF 14A.
+    Provide either `period` (e.g. "FY2024", "2024-05-10") or `fiscal_year` as int.
+    The period stored in the DB is always the actual EDGAR reportDate (YYYY-MM-DD).
     Returns the number of chunks written to the database.
     """
+    search_period = _build_search_period(fiscal_year, period)
     # HTTP and CPU work outside the DB transaction.
     company = company_info_for_ticker(ticker)
-    filing = fetch_10k(ticker, fiscal_year)
-    period = f"FY{fiscal_year}"
+    filing = fetch_filing(ticker, form_type, search_period)
+    # Canonical stored period is the actual EDGAR reportDate as a typed date, not a string.
+    stored_period = datetime.date.fromisoformat(filing["report_date"])
     texts = chunk_text(filing["text"])
     if not texts:
-        raise ValueError(f"No text extracted from {ticker} FY{fiscal_year} 10-K")
+        raise ValueError(
+            f"No text extracted from {ticker} {stored_period} {form_type}"
+        )
 
     vectors = _embed_batched(texts)
 
@@ -123,10 +148,11 @@ def ingest(ticker: str, fiscal_year: int) -> int:
         row = conn.execute(
             """
             INSERT INTO filing_types (code)
-            VALUES ('10-K')
+            VALUES (%s)
             ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
             RETURNING id
             """,
+            (form_type,),
         ).fetchone()
         filing_type_id = row[0]
 
@@ -135,14 +161,17 @@ def ingest(ticker: str, fiscal_year: int) -> int:
             INSERT INTO documents (company_id, filing_type_id, period, filed_at, accession, raw_url)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (accession) DO UPDATE
-                SET filed_at = EXCLUDED.filed_at,
-                    raw_url  = EXCLUDED.raw_url
+                SET company_id     = EXCLUDED.company_id,
+                    filing_type_id = EXCLUDED.filing_type_id,
+                    period         = EXCLUDED.period,
+                    filed_at       = EXCLUDED.filed_at,
+                    raw_url        = EXCLUDED.raw_url
             RETURNING id
             """,
             (
                 company_id,
                 filing_type_id,
-                period,
+                stored_period,
                 filing["filed_at"],
                 filing["accession"],
                 filing["raw_url"],

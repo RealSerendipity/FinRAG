@@ -2,7 +2,7 @@
 
 ## Fixture
 
-- Ticker: `DEMO`, Period: `FY2024`
+- Ticker: `DEMO`, Period: `FY2024` (fixture seed; legacy format predates YYYY-MM-DD period contract)
 - 3 chunks seeded via `data/fixtures/seed.py`
 - document `id=1` in Neon Postgres
 
@@ -46,12 +46,17 @@
 
 ## Observations
 
-- Citation `chunk_id` 在所有 3 道题上均指向真实存在的 chunk，hallucination 检查全部通过。
-- LLM 对 quote 字段的处理：Q1 和 Q3 基本逐字引用原文；Q2 做了轻微截断（去掉了后半段"up from $1.8 billion"）。说明 quote 的完整性无法靠 chunk_id 检查保证，需要 Wave 2 的 faithfulness 指标量化。
-- 3 道题全部命中正确 chunk（chunk_id 与问题内容一一对应），dense retrieval 在小 fixture 上表现符合预期。
+- Citation `chunk_id` resolves to a real chunk on all 3 questions; hallucination check passes in every case.
+- LLM quote fidelity: Q1 and Q3 quote nearly verbatim; Q2 truncates slightly (drops "up from $1.8 billion"). This shows chunk_id existence checks alone cannot guarantee quote completeness — a faithfulness metric is needed (Wave 2).
+- All 3 questions hit the correct chunk (chunk_id matches question content one-to-one); dense retrieval on a small fixture behaves as expected.
 
 ## Theory ↔ Practice
 
-假设：让 LLM 返回 chunk_id 并做存在性校验，可以把最粗粒度的幻觉（引用不存在的来源）阻断在 API 层，同时让用户有原文可查。
+**Assumption:** Having the LLM return a `chunk_id` and validating its existence at the API layer
+blocks the coarsest form of hallucination (citing a non-existent source) while giving users a
+traceable reference to the original text.
 
-实测：Gemini 2.5 Flash 在 3 条 chunk 的 fixture 上 chunk_id 准确率 100%，但 quote 有时截断原文。这说明 citation 检查在"来源可追溯"层面有效，在"引用完整性"层面需要额外的 faithfulness 评估。Wave 1.5 mini-eval 和 Wave 2 harness 将用真实 EDGAR 数据量化这个差距。
+**Observed:** Gemini 2.5 Flash achieves 100% chunk_id accuracy on a 3-chunk fixture, but quotes
+are occasionally truncated. Citation checks are effective at the "source traceability" level but
+insufficient at the "quote completeness" level — faithfulness evaluation is required.
+Wave 1.5 mini-eval and the Wave 2 harness will quantify this gap using real EDGAR data.

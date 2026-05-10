@@ -73,7 +73,7 @@ def test_ingest_live_aapl():
     from src.ingest import ingest
 
     try:
-        n = ingest("AAPL", 2024)
+        n = ingest("AAPL", fiscal_year=2024)
     except httpx.ConnectError as exc:
         pytest.skip(f"EDGAR unreachable (network/VPN): {exc}")
     assert n > 0, "Expected at least one chunk after ingesting AAPL 2024 10-K"

@@ -1,11 +1,11 @@
-"""SEC EDGAR API client: CIK lookup and 10-K text fetch.
+"""SEC EDGAR API client: CIK lookup and filing text fetch.
 
 Public surface
 --------------
 - `company_info_for_ticker(ticker)` — returns {"cik": int, "name": str}
 - `cik_for_ticker(ticker)` — returns the integer CIK for a ticker symbol
-- `fetch_10k(ticker, fiscal_year)` — returns {accession, filed_at, report_date, raw_url, text}
-  for the 10-K whose period-of-report falls in `fiscal_year`
+- `fetch_filing(ticker, form_type, period)` — returns {accession, filed_at, report_date,
+  raw_url, text} for the filing matching form_type and period string
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ from html.parser import HTMLParser
 from ..clients import edgar as edgar_client
 
 _ticker_info_cache: dict[str, dict] | None = None  # {TICKER: {"cik": int, "name": str}}
+
+# Forms that can appear multiple times per year; year-level period is ambiguous for them.
+_MULTI_FILING_FORMS = frozenset({"8-K", "10-Q"})
 
 _BLOCK_TAGS = frozenset(
     "p div h1 h2 h3 h4 h5 h6 li tr td th section article header footer "
@@ -63,12 +66,50 @@ def _iter_filing_pages(subs: dict) -> list[dict]:
     return pages
 
 
-def fetch_10k(ticker: str, fiscal_year: int) -> dict:
-    """Fetch the 10-K whose period-of-report (reportDate) falls in `fiscal_year`.
+def _match_period(period: str, report_date: str) -> bool:
+    """Return True if report_date (YYYY-MM-DD) matches the period string.
 
-    Returns a dict with keys: accession, filed_at, report_date, raw_url, text.
-    Raises ValueError if no matching 10-K is found.
+    Supported period formats:
+    - "FY2024"     — year match: report_date starts with "2024"
+    - "2024-05-10" — exact date match (8-K, DEF 14A, precise 10-Q)
+    - "2024"       — year-level match (any form type)
+
+    Quarter-style strings (Q1-YYYY) are intentionally unsupported: SEC fiscal
+    quarters are company-specific and do not map to fixed calendar months.
+    Pass the exact reportDate instead.
     """
+    if not report_date:
+        return False
+    if period.startswith("FY"):
+        return report_date.startswith(period[2:])
+    # "YYYY-MM-DD" exact match
+    if len(period) == 10 and period[4] == "-" and period[7] == "-":
+        return report_date == period
+    # bare year fallback
+    return report_date.startswith(period)
+
+
+def _is_year_level(period: str) -> bool:
+    """Return True if period is a year-level specifier (FY2024 or bare 2024)."""
+    return period.startswith("FY") or (len(period) == 4 and period.isdigit())
+
+
+def fetch_filing(ticker: str, form_type: str, period: str) -> dict:
+    """Fetch the first EDGAR filing matching form_type whose reportDate matches period.
+
+    Supported form types: 10-K, 10-Q, 8-K, 20-F, DEF 14A.
+    Returns a dict with keys: accession, filed_at, report_date, raw_url, text.
+    Raises ValueError if no matching filing is found.
+
+    8-K and 10-Q occur multiple times per year; year-level periods (e.g. FY2024, 2024)
+    are rejected for these forms — provide an exact date: YYYY-MM-DD.
+    """
+    if form_type in _MULTI_FILING_FORMS and _is_year_level(period):
+        raise ValueError(
+            f"{form_type} filings occur multiple times per year. "
+            f"Provide an exact reportDate instead of a year-level period: "
+            f"--period YYYY-MM-DD"
+        )
     cik = cik_for_ticker(ticker)
     subs = json.loads(edgar_client.get_submissions(cik))
 
@@ -80,11 +121,11 @@ def fetch_10k(ticker: str, fiscal_year: int) -> dict:
         primary_docs: list[str] = page["primaryDocument"]
 
         for i, form in enumerate(forms):
-            if form != "10-K":
+            if form != form_type:
                 continue
-            # Use reportDate (period-of-report) to match fiscal year, not filingDate.
+            # Use reportDate (period-of-report) to match period, not filingDate.
             report_date = report_dates[i] if i < len(report_dates) else ""
-            if not report_date or not report_date.startswith(str(fiscal_year)):
+            if not _match_period(period, report_date):
                 continue
 
             accession = accessions[i]  # e.g. "0000320193-24-000073"
@@ -107,7 +148,9 @@ def fetch_10k(ticker: str, fiscal_year: int) -> dict:
                 "text": text,
             }
 
-    raise ValueError(f"No 10-K found for {ticker!r} with reportDate in {fiscal_year}")
+    raise ValueError(
+        f"No {form_type} found for {ticker!r} with period matching {period!r}"
+    )
 
 
 def _detect_encoding(raw: bytes) -> str:

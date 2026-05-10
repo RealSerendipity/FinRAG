@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from pydantic import BaseModel
 
 
@@ -25,7 +27,7 @@ class Filing(BaseModel):
 
     ticker: str
     filing_type: str
-    period: str
+    period: datetime.date
     accession: str
-    filed_at: str
+    filed_at: datetime.date | None = None
     raw_url: str | None = None

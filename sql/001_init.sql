@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS documents (
     id             BIGSERIAL   PRIMARY KEY,
     company_id     BIGINT      NOT NULL REFERENCES companies(id) ON DELETE RESTRICT,
     filing_type_id BIGINT      NOT NULL REFERENCES filing_types(id) ON DELETE RESTRICT,
-    period         TEXT        NOT NULL,
+    period         DATE        NOT NULL,
     filed_at       DATE,
     accession      TEXT        UNIQUE NOT NULL,
     raw_url        TEXT,

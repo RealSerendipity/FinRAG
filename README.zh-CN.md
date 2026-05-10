@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-面向 SEC 披露文件（10-K / 10-Q / earnings calls）的检索增强与 Agent 系统。
+面向 SEC EDGAR 披露文件（10-K / 10-Q / 8-K / 20-F / DEF 14A）的检索增强与 Agent 系统。
 这是一个动手型 LLM 应用工程项目，覆盖金融研究工作流、结构化回答、citation、eval 和可部署的 AI 产品形态。
 
 ## 概览
