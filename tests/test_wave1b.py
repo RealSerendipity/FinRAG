@@ -22,7 +22,7 @@ def _skip_unless(*env_vars: str) -> None:
 def test_retrieve_returns_results() -> None:
     _skip_unless("DATABASE_URL", "NVIDIA_API_KEY")
     from src.retrieve import retrieve
-    results = retrieve("revenue", ticker="DEMO", period="FY2024", top_k=3)
+    results = retrieve("revenue", ticker="DEMO", period="2024-12-31", top_k=3)
     assert len(results) > 0
     assert all("id" in r and "content" in r for r in results)
 
@@ -49,7 +49,7 @@ def test_retrieve_distance_ascending() -> None:
 def test_ask_returns_cited_answer() -> None:
     _skip_unless("DATABASE_URL", "NVIDIA_API_KEY", "LLM_PROVIDER")
     from src.rag import ask
-    answer = ask("What was DEMO Corp's revenue in FY2024?", ticker="DEMO", period="FY2024")
+    answer = ask("What was DEMO Corp's revenue in FY2024?", ticker="DEMO", period="2024-12-31")
     assert answer.text
     assert len(answer.citations) > 0
     assert all(isinstance(c.chunk_id, int) for c in answer.citations)
