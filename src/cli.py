@@ -11,9 +11,11 @@ Usage
 from __future__ import annotations
 
 import sys
+import time
 
 import click
 
+from src.db import bootstrap
 from src.ingest import ingest as run_ingest
 from src.rag import ask as run_ask
 
@@ -39,17 +41,24 @@ def ingest(tickers: str, form_type: str, year: int | None, period: str | None) -
     if not ticker_list:
         raise click.UsageError("--tickers must contain at least one ticker symbol")
 
+    bootstrap()
     label = period or f"FY{year}"
     failed: list[str] = []
+    total_start = time.monotonic()
     for ticker in ticker_list:
         click.echo(f"Ingesting {ticker} {form_type} {label}...", nl=False)
+        t0 = time.monotonic()
         try:
             chunk_count = run_ingest(ticker, form_type=form_type, period=period, fiscal_year=year)
-            click.echo(f" done ({chunk_count} chunks)")
+            elapsed = time.monotonic() - t0
+            click.echo(f" done ({chunk_count} chunks, {elapsed:.1f}s)")
         except Exception as exc:
-            click.echo(f" FAILED: {exc}", err=True)
+            elapsed = time.monotonic() - t0
+            click.echo(f" FAILED: {exc} ({elapsed:.1f}s)", err=True)
             failed.append(ticker)
 
+    if len(ticker_list) > 1:
+        click.echo(f"Total: {time.monotonic() - total_start:.1f}s")
     if failed:
         click.echo(f"\nFailed tickers: {', '.join(failed)}", err=True)
         sys.exit(1)
@@ -61,8 +70,12 @@ def ingest(tickers: str, form_type: str, year: int | None, period: str | None) -
 @click.argument("question")
 def ask(ticker: str, year: int | None, question: str) -> None:
     """Ask a question over ingested filings and print the cited answer."""
+    bootstrap()
     period = str(year) if year else None
+    t0 = time.monotonic()
     answer = run_ask(question, ticker=ticker.upper(), period=period)
+    elapsed = time.monotonic() - t0
     click.echo(f"\n{answer.text}\n")
     for citation in answer.citations:
         click.echo(f"  [chunk {citation.chunk_id}] {citation.quote!r}")
+    click.echo(f"\n({elapsed:.1f}s)")
