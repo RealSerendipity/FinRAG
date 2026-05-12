@@ -1,4 +1,4 @@
-"""Three-provider LLM dispatch — Gemini (primary), Anthropic, OpenAI.
+"""Four-provider LLM dispatch — Gemini (primary), Anthropic, OpenAI, NVIDIA NIM.
 
 Single-file `if/elif` dispatch by design. Each provider branch owns its own
 SDK import (lazy), message-format conversion, and usage extraction. We do not
@@ -22,6 +22,7 @@ from typing import Any
 from . import config
 from .clients import anthropic as anthropic_client
 from .clients import gemini as gemini_client
+from .clients import nvidia as nvidia_client
 from .clients import openai as openai_client
 
 
@@ -65,6 +66,8 @@ def chat(
         return _chat_anthropic(messages, model, system, temperature, max_tokens)
     if provider == "openai":
         return _chat_openai(messages, model, system, temperature, max_tokens)
+    if provider == "nvidia":
+        return _chat_nvidia(messages, model, system, temperature, max_tokens)
     raise AssertionError(f"provider {provider!r} passed validation but has no handler")
 
 
@@ -164,6 +167,40 @@ def _chat_openai(
         text=(choice.message.content or "").strip(),
         usage=usage,
         provider="openai",
+        model=model,
+        raw=resp,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# NVIDIA NIM (open-weight via OpenAI-compatible endpoint)
+# --------------------------------------------------------------------------- #
+def _chat_nvidia(
+    messages: list[Message],
+    model: str,
+    system: str | None,
+    temperature: float,
+    max_tokens: int,
+) -> LLMResponse:
+    api_key = config.api_key("nvidia")
+    if not api_key:
+        raise RuntimeError("NVIDIA_API_KEY is not set")
+
+    resp = nvidia_client.complete(
+        messages, model,
+        api_key=api_key, base_url=config.nvidia_base_url(),
+        system=system, temperature=temperature, max_tokens=max_tokens,
+    )
+    choice = resp.choices[0]
+    usage = {
+        "input_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+        "output_tokens": resp.usage.completion_tokens if resp.usage else 0,
+        "total_tokens": resp.usage.total_tokens if resp.usage else 0,
+    }
+    return LLMResponse(
+        text=(choice.message.content or "").strip(),
+        usage=usage,
+        provider="nvidia",
         model=model,
         raw=resp,
     )
