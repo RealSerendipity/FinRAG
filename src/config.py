@@ -13,17 +13,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ----- LLM -----
-_KNOWN_PROVIDERS = ("gemini", "anthropic", "openai")
+_KNOWN_PROVIDERS = ("gemini", "anthropic", "openai", "nvidia")
 
 DEFAULT_LLM_MODELS = {
     "gemini": "gemini-2.5-flash",
     "anthropic": "claude-sonnet-4-6",
     "openai": "gpt-4.1-mini",
+    "nvidia": "meta/llama-3.1-70b-instruct",
 }
 DEFAULT_JUDGE_MODELS = {
     "gemini": "gemini-2.5-flash-lite",
     "anthropic": "claude-haiku-4-5-20251001",
     "openai": "gpt-4.1-nano",
+    "nvidia": "meta/llama-3.1-8b-instruct",
 }
 
 
@@ -31,7 +33,7 @@ def llm_provider() -> str:
     val = os.environ.get("LLM_PROVIDER", "").lower()
     if not val:
         raise RuntimeError(
-            "LLM_PROVIDER is not set. Add it to .env: LLM_PROVIDER=gemini|anthropic|openai"
+            "LLM_PROVIDER is not set. Add it to .env: LLM_PROVIDER=gemini|anthropic|openai|nvidia"
         )
     return val
 
