@@ -33,3 +33,26 @@ def create_embeddings(
     )
     items = sorted(resp.data, key=lambda e: e.index)
     return [item.embedding for item in items]
+
+
+def complete(
+    messages: list[dict],
+    model: str,
+    *,
+    api_key: str,
+    base_url: str,
+    system: str | None,
+    temperature: float,
+    max_tokens: int,
+):
+    """Call the NVIDIA NIM chat completions endpoint; return the raw SDK response."""
+    client = _get_client(api_key, base_url)
+    payload = list(messages)
+    if system:
+        payload = [{"role": "system", "content": system}, *payload]
+    return client.chat.completions.create(
+        model=model,
+        messages=payload,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )

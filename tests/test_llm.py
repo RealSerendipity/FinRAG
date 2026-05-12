@@ -33,6 +33,7 @@ def _assert_hello(resp: LLMResponse) -> None:
         ("gemini", "GEMINI_API_KEY"),
         ("anthropic", "ANTHROPIC_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
+        ("nvidia", "NVIDIA_API_KEY"),
     ],
 )
 def test_chat_hello_world(provider: str, env_var: str) -> None:
