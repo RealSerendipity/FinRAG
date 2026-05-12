@@ -2,10 +2,9 @@
 
 Public surface
 --------------
-- `company_info_for_ticker(ticker)` — returns {"cik": int, "name": str}
+- `company_info_for_ticker(ticker)` — returns EdgarCompanyInfo
 - `cik_for_ticker(ticker)` — returns the integer CIK for a ticker symbol
-- `fetch_filing(ticker, form_type, period)` — returns {accession, filed_at, report_date,
-  raw_url, text} for the filing matching form_type and period string
+- `fetch_filing(ticker, form_type, period)` — returns EdgarFiling for the matching filing
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from html.parser import HTMLParser
 
 from ..clients import edgar as edgar_client
 
-_ticker_info_cache: dict[str, dict] | None = None  # {TICKER: {"cik": int, "name": str}}
+_ticker_info_cache: dict[str, edgar_client.EdgarCompanyInfo] | None = None
 
 # Forms that can appear multiple times per year; year-level period is ambiguous for them.
 _MULTI_FILING_FORMS = frozenset({"8-K", "10-Q"})
@@ -34,8 +33,8 @@ _VOID_TAGS = frozenset(
 )
 
 
-def company_info_for_ticker(ticker: str) -> dict:
-    """Return {"cik": int, "name": str} for a ticker, using a cached company list.
+def company_info_for_ticker(ticker: str) -> edgar_client.EdgarCompanyInfo:
+    """Return validated company info for a ticker, using a cached company list.
 
     Raises ValueError if the ticker is not found in the EDGAR company list.
     """
@@ -43,7 +42,9 @@ def company_info_for_ticker(ticker: str) -> dict:
     if _ticker_info_cache is None:
         data = json.loads(edgar_client.get_tickers())
         _ticker_info_cache = {
-            v["ticker"].upper(): {"cik": int(v["cik_str"]), "name": v["title"]}
+            v["ticker"].upper(): edgar_client.EdgarCompanyInfo.model_validate(
+                {"cik": v["cik_str"], "name": v["title"]}
+            )
             for v in data.values()
         }
     info = _ticker_info_cache.get(ticker.upper())
@@ -54,7 +55,7 @@ def company_info_for_ticker(ticker: str) -> dict:
 
 def cik_for_ticker(ticker: str) -> int:
     """Return the integer CIK for a ticker symbol."""
-    return company_info_for_ticker(ticker)["cik"]
+    return company_info_for_ticker(ticker).cik
 
 
 def _iter_filing_pages(subs: dict) -> list[dict]:
@@ -94,11 +95,11 @@ def _is_year_level(period: str) -> bool:
     return period.startswith("FY") or (len(period) == 4 and period.isdigit())
 
 
-def fetch_filing(ticker: str, form_type: str, period: str) -> dict:
+def fetch_filing(ticker: str, form_type: str, period: str) -> edgar_client.EdgarFiling:
     """Fetch the first EDGAR filing matching form_type whose reportDate matches period.
 
     Supported form types: 10-K, 10-Q, 8-K, 20-F, DEF 14A.
-    Returns a dict with keys: accession, filed_at, report_date, raw_url, text.
+    Returns an EdgarFiling with accession, filed_at, report_date, raw_url, and text.
     Raises ValueError if no matching filing is found.
 
     8-K and 10-Q occur multiple times per year; year-level periods (e.g. FY2024, 2024)
@@ -140,13 +141,15 @@ def fetch_filing(ticker: str, form_type: str, period: str) -> dict:
             raw_text = raw_bytes.decode(encoding, errors="replace")
             text = _strip_html(raw_text)
 
-            return {
-                "accession": accession,
-                "filed_at": filing_dates[i],
-                "report_date": report_date,
-                "raw_url": raw_url,
-                "text": text,
-            }
+            return edgar_client.EdgarFiling.model_validate(
+                {
+                    "accession": accession,
+                    "filed_at": filing_dates[i],
+                    "report_date": report_date,
+                    "raw_url": raw_url,
+                    "text": text,
+                }
+            )
 
     raise ValueError(
         f"No {form_type} found for {ticker!r} with period matching {period!r}"

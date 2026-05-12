@@ -8,10 +8,9 @@ Public surface
 
 from __future__ import annotations
 
-import datetime
-
 import tiktoken
 
+from src.clients.edgar import EdgarCompanyInfo, EdgarFiling
 from src.db import get_conn
 from src.embed import embed
 from src.financial.edgar import company_info_for_ticker, fetch_filing
@@ -108,11 +107,11 @@ def ingest(
     """
     search_period = _build_search_period(fiscal_year, period)
     # HTTP and CPU work outside the DB transaction.
-    company = company_info_for_ticker(ticker)
-    filing = fetch_filing(ticker, form_type, search_period)
+    company = EdgarCompanyInfo.model_validate(company_info_for_ticker(ticker))
+    filing = EdgarFiling.model_validate(fetch_filing(ticker, form_type, search_period))
     # Canonical stored period is the actual EDGAR reportDate as a typed date, not a string.
-    stored_period = datetime.date.fromisoformat(filing["report_date"])
-    texts = chunk_text(filing["text"])
+    stored_period = filing.report_date
+    texts = chunk_text(filing.text)
     if not texts:
         raise ValueError(
             f"No text extracted from {ticker} {stored_period} {form_type}"
@@ -139,7 +138,7 @@ def ingest(
                     name = COALESCE(EXCLUDED.name, companies.name)
             RETURNING id
             """,
-            (ticker.upper(), company["cik"], company["name"]),
+            (ticker.upper(), company.cik, company.name),
         ).fetchone()
         company_id = row[0]
 
@@ -172,9 +171,9 @@ def ingest(
                 company_id,
                 filing_type_id,
                 stored_period,
-                filing["filed_at"],
-                filing["accession"],
-                filing["raw_url"],
+                filing.filed_at,
+                filing.accession,
+                filing.raw_url,
             ),
         ).fetchone()
         doc_id = row[0]

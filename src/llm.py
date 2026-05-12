@@ -1,4 +1,4 @@
-"""Three-provider LLM dispatch — Gemini (primary), Anthropic, OpenAI.
+"""Four-provider LLM dispatch — Gemini (primary), Anthropic, OpenAI, NVIDIA NIM.
 
 Single-file `if/elif` dispatch by design. Each provider branch owns its own
 SDK import (lazy), message-format conversion, and usage extraction. We do not
@@ -22,6 +22,7 @@ from typing import Any
 from . import config
 from .clients import anthropic as anthropic_client
 from .clients import gemini as gemini_client
+from .clients import nvidia as nvidia_client
 from .clients import openai as openai_client
 
 
@@ -58,6 +59,7 @@ def chat(
             f"Set LLM_PROVIDER to one of: {', '.join(config._KNOWN_PROVIDERS)}"
         )
     model = model or config.llm_model(provider)
+    config.validate_provider_model(provider, model)
 
     if provider == "gemini":
         return _chat_gemini(messages, model, system, temperature, max_tokens)
@@ -65,6 +67,8 @@ def chat(
         return _chat_anthropic(messages, model, system, temperature, max_tokens)
     if provider == "openai":
         return _chat_openai(messages, model, system, temperature, max_tokens)
+    if provider == "nvidia":
+        return _chat_nvidia(messages, model, system, temperature, max_tokens)
     raise AssertionError(f"provider {provider!r} passed validation but has no handler")
 
 
@@ -106,6 +110,10 @@ def _chat_gemini(
     )
 
 
+# Models that use adaptive thinking; require temperature=1 at the API level.
+_ANTHROPIC_THINKING_MODELS: frozenset[str] = frozenset({"claude-opus-4-7"})
+
+
 # --------------------------------------------------------------------------- #
 # Anthropic (backup; Wave 5 uses this for prompt-caching demo)
 # --------------------------------------------------------------------------- #
@@ -120,10 +128,12 @@ def _chat_anthropic(
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
 
+    thinking = {"type": "adaptive"} if model in _ANTHROPIC_THINKING_MODELS else None
     resp = anthropic_client.complete(
         messages, model,
         api_key=api_key, system=system,
         temperature=temperature, max_tokens=max_tokens,
+        thinking=thinking,
     )
     text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
     usage = {
@@ -166,4 +176,58 @@ def _chat_openai(
         provider="openai",
         model=model,
         raw=resp,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# NVIDIA NIM (open-weight via OpenAI-compatible endpoint)
+# --------------------------------------------------------------------------- #
+def _chat_nvidia(
+    messages: list[Message],
+    model: str,
+    system: str | None,
+    temperature: float,
+    max_tokens: int,
+) -> LLMResponse:
+    api_key = config.api_key("nvidia")
+    if not api_key:
+        raise RuntimeError("NVIDIA_API_KEY is not set")
+
+    resp = nvidia_client.complete(
+        messages, model,
+        api_key=api_key, base_url=config.nvidia_base_url(),
+        system=system, temperature=temperature, max_tokens=max_tokens,
+    )
+    choice = resp.choices[0]
+    usage = {
+        "input_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+        "output_tokens": resp.usage.completion_tokens if resp.usage else 0,
+        "total_tokens": resp.usage.total_tokens if resp.usage else 0,
+    }
+    return LLMResponse(
+        text=(choice.message.content or "").strip(),
+        usage=usage,
+        provider="nvidia",
+        model=model,
+        raw=resp,
+    )
+
+
+def judge_chat(
+    messages: list[Message],
+    *,
+    system: str | None = None,
+    temperature: float = 0.0,
+    max_tokens: int = 2048,
+) -> LLMResponse:
+    """Like chat() but uses LLM_JUDGE_PROVIDER / LLM_JUDGE_MODEL from config."""
+    provider = config.judge_provider()
+    model = config.judge_model(provider)
+    return chat(
+        messages,
+        provider=provider,
+        model=model,
+        system=system,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )

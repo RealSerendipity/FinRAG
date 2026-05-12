@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import unittest.mock as mock
 
 import pytest
 
-import src.config  # triggers load_dotenv()
+import src.config  # noqa: F401  # triggers load_dotenv()
 
 
 def _skip_unless(*env_vars: str) -> None:
@@ -49,7 +50,17 @@ def test_retrieve_distance_ascending() -> None:
 def test_ask_returns_cited_answer() -> None:
     _skip_unless("DATABASE_URL", "NVIDIA_API_KEY", "LLM_PROVIDER")
     from src.rag import ask
-    answer = ask("What was DEMO Corp's revenue in FY2024?", ticker="DEMO", period="2024-12-31")
+    try:
+        answer = ask(
+            "What was DEMO Corp's revenue in FY2024?",
+            ticker="DEMO",
+            period="2024-12-31",
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if any(k in msg for k in ("quota", "rate_limit", "429", "503", "unavailable")):
+            pytest.skip(f"LLM provider unavailable/quota-limited: {exc}")
+        raise
     assert answer.text
     assert len(answer.citations) > 0
     assert all(isinstance(c.chunk_id, int) for c in answer.citations)
@@ -57,17 +68,29 @@ def test_ask_returns_cited_answer() -> None:
 
 def test_ask_rejects_hallucinated_citation() -> None:
     """Patch retrieve + chat — no real API calls needed for this safety check."""
-    import unittest.mock as mock
     from src import rag
 
-    fake_chunks = [{"id": 99999, "content": "Revenue was $12.5B", "section": None,
-                    "chunk_index": 0, "metadata": {}, "distance": 0.1}]
+    fake_chunks = [
+        {
+            "id": 99999,
+            "content": "Revenue was $12.5B",
+            "section": None,
+            "chunk_index": 0,
+            "metadata": {},
+            "distance": 0.1,
+        }
+    ]
 
     # Return a response that cites a non-existent chunk_id.
     fake_resp = mock.MagicMock()
-    fake_resp.text = '{"text": "Revenue was high.", "citations": [{"chunk_id": 1, "quote": "Revenue was $12.5B"}]}'
+    fake_resp.text = (
+        '{"text": "Revenue was high.", '
+        '"citations": [{"chunk_id": 1, "quote": "Revenue was $12.5B"}]}'
+    )
 
-    with mock.patch("src.rag.retrieve", return_value=fake_chunks), \
-         mock.patch("src.rag.chat", return_value=fake_resp):
+    with (
+        mock.patch("src.rag.retrieve", return_value=fake_chunks),
+        mock.patch("src.rag.chat", return_value=fake_resp),
+    ):
         with pytest.raises(ValueError, match="hallucination"):
             rag.ask("What was revenue?")

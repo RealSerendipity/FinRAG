@@ -10,14 +10,104 @@ Usage
 
 from __future__ import annotations
 
+import re
 import sys
 import time
+from typing import Any, Literal
 
 import click
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.db import bootstrap
 from src.ingest import ingest as run_ingest
 from src.rag import ask as run_ask
+
+_TICKER_PATTERN = re.compile(r"^[A-Z0-9]{1,5}$")
+_PERIOD_PATTERN = re.compile(r"^(?:FY\d{4}|\d{4}|\d{4}-\d{2}-\d{2})$")
+
+
+def _normalize_ticker(value: Any) -> str:
+    text = str(value).strip().upper()
+    if not _TICKER_PATTERN.fullmatch(text):
+        raise ValueError("ticker must be 1-5 uppercase alphanumeric characters")
+    return text
+
+
+def _validate_period(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not _PERIOD_PATTERN.fullmatch(value):
+        raise ValueError("period must match FY followed by 4 digits, YYYY, or YYYY-MM-DD")
+    return value
+
+
+class IngestInput(BaseModel):
+    """Validated input for the ingest command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tickers: list[str] = Field(min_length=1, max_length=5)
+    form_type: Literal["10-K", "10-Q", "8-K", "20-F", "DEF 14A"] = "10-K"
+    year: int | None = Field(default=None, ge=1994, le=2030)
+    period: str | None = None
+
+    @field_validator("tickers", mode="before")
+    @classmethod
+    def _split_tickers(cls, value: Any) -> list[Any]:
+        if isinstance(value, str):
+            return [item for item in value.split(",") if item.strip()]
+        return list(value)
+
+    @field_validator("tickers", mode="after")
+    @classmethod
+    def _validate_tickers(cls, value: list[str]) -> list[str]:
+        return [_normalize_ticker(item) for item in value]
+
+    @field_validator("form_type", mode="before")
+    @classmethod
+    def _normalize_form_type(cls, value: Any) -> str:
+        return str(value).strip().upper()
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _normalize_period(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("period", mode="after")
+    @classmethod
+    def _validate_period(cls, value: str | None) -> str | None:
+        return _validate_period(value)
+
+
+class AskInput(BaseModel):
+    """Validated input for the ask command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    year: int | None = Field(default=None, ge=1994, le=2030)
+    question: str = Field(min_length=1)
+
+    @field_validator("ticker", mode="before")
+    @classmethod
+    def _validate_ticker(cls, value: Any) -> str:
+        return _normalize_ticker(value)
+
+    @field_validator("question", mode="before")
+    @classmethod
+    def _normalize_question(cls, value: Any) -> str:
+        return str(value).strip()
+
+
+def _raise_usage_error(exc: ValidationError) -> None:
+    messages = []
+    for error in exc.errors():
+        loc = ".".join(str(part) for part in error["loc"])
+        messages.append(f"{loc}: {error['msg']}")
+    raise click.UsageError("; ".join(messages)) from exc
 
 
 @click.group()
@@ -35,21 +125,27 @@ def cli() -> None:
               help="Explicit period string: FY2024, 2024, 2024-03-29. Overrides --year.")
 def ingest(tickers: str, form_type: str, year: int | None, period: str | None) -> None:
     """Fetch and ingest SEC filings into the vector store."""
-    if period is None and year is None:
+    try:
+        parsed = IngestInput(tickers=tickers, form_type=form_type, year=year, period=period)
+    except ValidationError as exc:
+        _raise_usage_error(exc)
+    if parsed.period is None and parsed.year is None:
         raise click.UsageError("Provide --year or --period")
-    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    if not ticker_list:
-        raise click.UsageError("--tickers must contain at least one ticker symbol")
 
     bootstrap()
-    label = period or f"FY{year}"
+    label = parsed.period or f"FY{parsed.year}"
     failed: list[str] = []
     total_start = time.monotonic()
-    for ticker in ticker_list:
-        click.echo(f"Ingesting {ticker} {form_type} {label}...", nl=False)
+    for ticker in parsed.tickers:
+        click.echo(f"Ingesting {ticker} {parsed.form_type} {label}...", nl=False)
         t0 = time.monotonic()
         try:
-            chunk_count = run_ingest(ticker, form_type=form_type, period=period, fiscal_year=year)
+            chunk_count = run_ingest(
+                ticker,
+                form_type=parsed.form_type,
+                period=parsed.period,
+                fiscal_year=parsed.year,
+            )
             elapsed = time.monotonic() - t0
             click.echo(f" done ({chunk_count} chunks, {elapsed:.1f}s)")
         except Exception as exc:
@@ -57,7 +153,7 @@ def ingest(tickers: str, form_type: str, year: int | None, period: str | None) -
             click.echo(f" FAILED: {exc} ({elapsed:.1f}s)", err=True)
             failed.append(ticker)
 
-    if len(ticker_list) > 1:
+    if len(parsed.tickers) > 1:
         click.echo(f"Total: {time.monotonic() - total_start:.1f}s")
     if failed:
         click.echo(f"\nFailed tickers: {', '.join(failed)}", err=True)
@@ -70,10 +166,14 @@ def ingest(tickers: str, form_type: str, year: int | None, period: str | None) -
 @click.argument("question")
 def ask(ticker: str, year: int | None, question: str) -> None:
     """Ask a question over ingested filings and print the cited answer."""
+    try:
+        parsed = AskInput(ticker=ticker, year=year, question=question)
+    except ValidationError as exc:
+        _raise_usage_error(exc)
     bootstrap()
-    period = str(year) if year else None
+    period = str(parsed.year) if parsed.year else None
     t0 = time.monotonic()
-    answer = run_ask(question, ticker=ticker.upper(), period=period)
+    answer = run_ask(parsed.question, ticker=parsed.ticker, period=period)
     elapsed = time.monotonic() - t0
     click.echo(f"\n{answer.text}\n")
     for citation in answer.citations:

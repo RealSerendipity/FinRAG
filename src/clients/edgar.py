@@ -1,8 +1,33 @@
 """Raw EDGAR API calls. All HTTP goes through clients._http.fetch()."""
 from __future__ import annotations
 
+import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
 from src import config
 from src.clients import _http
+
+
+class EdgarCompanyInfo(BaseModel):
+    """Validated EDGAR company identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cik: int = Field(gt=0)
+    name: str = Field(min_length=1)
+
+
+class EdgarFiling(BaseModel):
+    """Validated EDGAR filing payload used by ingest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    accession: str
+    filed_at: datetime.date
+    report_date: datetime.date
+    raw_url: str
+    text: str
 
 
 def _headers() -> dict[str, str]:

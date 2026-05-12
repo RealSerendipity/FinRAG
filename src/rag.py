@@ -10,6 +10,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.financial.schemas import Answer
 from src.llm import chat
@@ -17,6 +20,48 @@ from src.retrieve import retrieve
 
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "answer_v1.txt"
 _PROMPT_TEMPLATE = _PROMPT_PATH.read_text()
+_PERIOD_PATTERN = re.compile(r"^(?:FY\d{4}|\d{4}|\d{4}-\d{2}-\d{2})$")
+
+
+class RagAskInput(BaseModel):
+    """Validated input for the RAG ask entry point."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1)
+    ticker: str | None = None
+    period: str | None = None
+    top_k: int = Field(default=5, ge=1, le=100)
+
+    @field_validator("question", mode="before")
+    @classmethod
+    def _normalize_question(cls, value: Any) -> str:
+        if value is None:
+            return ""  # min_length=1 will reject this
+        return str(value).strip()
+
+    @field_validator("ticker", mode="before")
+    @classmethod
+    def _normalize_ticker(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().upper()
+        return text or None
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _normalize_period(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("period", mode="after")
+    @classmethod
+    def _validate_period(cls, value: str | None) -> str | None:
+        if value is not None and not _PERIOD_PATTERN.fullmatch(value):
+            raise ValueError("period must match FY followed by 4 digits, YYYY, or YYYY-MM-DD")
+        return value
 
 
 def ask(
@@ -24,13 +69,19 @@ def ask(
     *,
     ticker: str | None = None,
     period: str | None = None,
-    top_k: int = 10,
+    top_k: int = 5,
 ) -> Answer:
     """Retrieve relevant chunks and generate a cited answer.
 
     Raises ValueError if the LLM returns citations pointing to non-existent chunk IDs.
     """
-    chunks = retrieve(question, ticker=ticker, period=period, top_k=top_k)
+    input_data = RagAskInput(question=question, ticker=ticker, period=period, top_k=top_k)
+    chunks = retrieve(
+        input_data.question,
+        ticker=input_data.ticker,
+        period=input_data.period,
+        top_k=input_data.top_k,
+    )
     if not chunks:
         raise ValueError("No chunks found for this query. Run ingest first.")
 
@@ -41,7 +92,7 @@ def ask(
     prompt = (
         _PROMPT_TEMPLATE
         .replace("{chunks}", context)
-        .replace("{question}", question)
+        .replace("{question}", input_data.question)
     )
 
     resp = chat(messages=[{"role": "user", "content": prompt}])
