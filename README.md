@@ -28,7 +28,7 @@ agent tools.
 | 1b   | Dense retrieval + cited answer (pydantic) over local fixture                                                           | ✅ shipped | structured `Answer` with valid citations                     |
 | 1c   | EDGAR ingestion + CLI driver                                                                                           | ✅ shipped | `finrag ingest` + `finrag ask` end-to-end                    |
 | 1d   | NVIDIA NIM as cloud open-weight provider                                                                               | ✅ shipped | `LLM_PROVIDER=nvidia` round-trip                             |
-| 1.5  | Mini-eval (5–10 hand-graded items)                                                                                     | ⏳         | retrieval hit-rate, citation validity                        |
+| 1.5  | Mini-eval over real AAPL FY2024 10-K (n=7, 6 positive + 1 insufficient) + prompt `v1.1` (insufficient-context returned as JSON, not bare text) | ✅ shipped | hit@5 / recall@5 / MRR / nDCG@5 / structural citation validity / LLM-judge faithfulness — numbers in [`eval/reports/wave1_5_mini_eval.md`](eval/reports/wave1_5_mini_eval.md) |
 | 2    | Eval harness (30–50 curated items)                                                                                     | ⏳         | recall@k, MRR, nDCG, faithfulness                            |
 | 3    | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite)                                           | ⏳         | recall@10 ablation table                                     |
 | 4    | ReAct agent + tools, then LangGraph migration                                                                          | ⏳         | task success rate                                            |
@@ -78,26 +78,38 @@ uv run finrag ask --ticker AAPL --year 2024 "What was Apple's R&D expense?"
 
 ```
 src/
-  llm.py            # LLM dispatch
-  embed.py          # embedding dispatch
-  db.py             # Postgres connection + schema bootstrap
-  rag.py            # retrieve → prompt → Answer (pydantic)
-  retrieve.py       # vector / FTS / hybrid / rerank retrieval
-  ingest.py         # parse → split → embed → upsert
-  cli.py            # finrag ask / ingest
-  financial/        # EDGAR, table extraction, pydantic schemas
-  rerank.py         # reranker dispatch
-  agent.py          # ReAct loop
-  tools/            # financial tools
-  api.py            # FastAPI
-  ui.py             # Streamlit
-  guardrails.py     # input/output filters
-  mcp_server.py     # expose tools as MCP server
-prompts/            # versioned prompt files
-sql/                # schema migrations
-eval/               # questions, red-team set, metrics, reports
-experiments/        # ablation scripts
-edge/               # Cloudflare Worker source
+  cli.py             # finrag ask / ingest entry point
+  config.py          # env-driven provider/model configuration
+  llm.py             # LLM provider dispatch (Gemini / Anthropic / OpenAI / NVIDIA)
+  embed.py           # NVIDIA NeMo Retriever embedding wrapper
+  rerank.py          # reranker dispatch
+  db.py              # Postgres connection + schema bootstrap
+  ingest.py          # parse → split → embed → upsert
+  retrieve.py        # vector / FTS / hybrid / rerank retrieval
+  rag.py             # retrieve → prompt → Answer (pydantic)
+  agent.py           # ReAct loop
+  api.py             # FastAPI
+  ui.py              # Streamlit
+  guardrails.py      # input/output filters
+  mcp_server.py      # expose tools as MCP server
+  clients/           # thin HTTP clients per provider
+    _http.py
+    anthropic.py
+    gemini.py
+    openai.py
+    nvidia.py
+    edgar.py
+  financial/         # EDGAR fetch + pydantic schemas
+    edgar.py
+    schemas.py
+  tools/             # financial tools used by the agent
+prompts/             # versioned prompt files
+sql/                 # schema migrations
+data/                # raw / processed / fixtures
+eval/                # questions, red-team set, metrics, reports
+experiments/         # ablation scripts
+tests/               # pytest suites
+edge/                # Cloudflare Worker source
 .env.example
 pyproject.toml
 README.md

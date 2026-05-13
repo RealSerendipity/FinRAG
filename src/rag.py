@@ -18,7 +18,7 @@ from src.financial.schemas import Answer
 from src.llm import chat
 from src.retrieve import retrieve
 
-_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "answer_v1.txt"
+_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "answer_v1.1.txt"
 _PROMPT_TEMPLATE = _PROMPT_PATH.read_text()
 _PERIOD_PATTERN = re.compile(r"^(?:FY\d{4}|\d{4}|\d{4}-\d{2}-\d{2})$")
 
