@@ -72,20 +72,20 @@
 
 每个 wave 开工前读对应章节,完工后在 `eval/reports/wave_<id>.md` 末尾加一段 "Theory ↔ Practice" 小结(50–150 字)。
 
-| Wave | LLM Engineer 章节 | 阅读重点 |
-|---|---|---|
-| 0 | §1 Running LLMs | API 调用、token 用量、各家 SDK 差异 |
-| 1a | §2 Building a Vector Storage | embedding、向量库、HNSW 参数、cosine vs L2 |
-| 1b | §2 Vector Storage + §3 RAG basics | similarity search、citation 契约、structured output |
-| 1c | §3 RAG ingestion | document loaders、splitters、metadata 设计 |
-| 1d | §1 Running LLMs(open-weight 部分) | NIM / Together / Groq 路由对比 |
-| 1.5 / 2 | §3 RAG eval | recall@k、MRR、nDCG、faithfulness、ragas、LLM-as-judge bias |
-| 3 | §4 Advanced RAG | hybrid search、RRF、reranking、query rewriting、HyDE、parent-doc |
-| 4 | §5 Agents | ReAct、tool-calling、LangGraph、agent eval |
-| 5A | §7 Deploying LLMs | FastAPI、Streamlit、Render / Fly 部署、cold start |
-| 5B | §6 Inference Optimization + §7 observability | prompt cache、KV cache 概念、Langfuse、$/query 计算 |
-| 6 | §8 Securing LLMs | prompt injection 类型学、output guardrails、ASR 测量 |
-| 7 | §5 Agents 深入 + §4 选定方向 | 按选中的 extension 精读对应资料 |
+| Wave    | LLM Engineer 章节                              | 阅读重点                                                        |
+| ------- | -------------------------------------------- | ----------------------------------------------------------- |
+| 0       | §1 Running LLMs                              | API 调用、token 用量、各家 SDK 差异                                   |
+| 1a      | §2 Building a Vector Storage                 | embedding、向量库、HNSW 参数、cosine vs L2                          |
+| 1b      | §2 Vector Storage + §3 RAG basics            | similarity search、citation 契约、structured output             |
+| 1c      | §3 RAG ingestion                             | document loaders、splitters、metadata 设计                      |
+| 1d      | §1 Running LLMs(open-weight 部分)              | NIM / Together / Groq 路由对比                                  |
+| 1.5 / 2 | §3 RAG eval                                  | recall@k、MRR、nDCG、faithfulness、ragas、LLM-as-judge bias      |
+| 3       | §4 Advanced RAG                              | hybrid search、RRF、reranking、query rewriting、HyDE、parent-doc |
+| 4       | §5 Agents                                    | ReAct、tool-calling、LangGraph、agent eval                     |
+| 5A      | §7 Deploying LLMs                            | FastAPI、Streamlit、Render / Fly 部署、cold start                |
+| 5B      | §6 Inference Optimization + §7 observability | prompt cache、KV cache 概念、Langfuse、$/query 计算                |
+| 6       | §8 Securing LLMs                             | prompt injection 类型学、output guardrails、ASR 测量               |
+| 7       | §5 Agents 深入 + §4 选定方向                       | 按选中的 extension 精读对应资料                                       |
 
 **一句话原则**:llm-course 是每个 wave 的"理论层",不另起平行项目;所有产出归到 finrag 仓库。
 
@@ -360,7 +360,7 @@ uv run python eval/mini_eval.py
 
 ---
 
-### Wave 2 — Eval harness(~3 天)★ 关键
+### Wave 2 — Eval harness(~3 天)★ 关键 ✅ 已交付
 
 #### 学习先修
 - **必读**:recall@k / MRR / nDCG 定义(信息检索教材任一章节);LLM-as-judge bias 文献(如 Zheng 2023);**为什么便宜的 judge 模型对相对比较已经够用**。
