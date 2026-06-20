@@ -40,6 +40,8 @@ HYBRID_CANDIDATES = 50
 _OR_TSQUERY = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
 
 _VALID_MODES = ("dense", "lexical", "hybrid")
+_VALID_REWRITES = ("none", "multi_query", "hyde")
+_MULTI_QUERY_N = 3  # paraphrases per multi-query expansion
 
 
 class RetrieveInput(BaseModel):
@@ -125,8 +127,10 @@ def _row_to_dict(row: tuple, score_key: str) -> dict:
     }
 
 
-def _dense_search(query: str, conds: list[str], fparams: list, k: int) -> list[dict]:
-    query_vec = embed([query], input_type="query")[0]
+def _dense_search(
+    embed_text: str, _fts_text: str, conds: list[str], fparams: list, k: int
+) -> list[dict]:
+    query_vec = embed([embed_text], input_type="query")[0]
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
     sql = f"""
         SELECT c.id, c.content, c.section, c.chunk_index, c.metadata,
@@ -143,7 +147,10 @@ def _dense_search(query: str, conds: list[str], fparams: list, k: int) -> list[d
     return [_row_to_dict(r, "distance") for r in rows]
 
 
-def _lexical_search(query: str, conds: list[str], fparams: list, k: int) -> list[dict]:
+def _lexical_search(
+    _embed_text: str, fts_text: str, conds: list[str], fparams: list, k: int
+) -> list[dict]:
+    query = fts_text
     extra = (" AND " + " AND ".join(conds)) if conds else ""
     sql = f"""
         WITH qq AS (SELECT {_OR_TSQUERY} AS tsq)
@@ -162,13 +169,17 @@ def _lexical_search(query: str, conds: list[str], fparams: list, k: int) -> list
     return [_row_to_dict(r, "score") for r in rows]
 
 
-def _hybrid_search(query: str, conds: list[str], fparams: list, k: int) -> list[dict]:
+def _hybrid_search(
+    embed_text: str, fts_text: str, conds: list[str], fparams: list, k: int
+) -> list[dict]:
     """RRF fusion of dense vector and lexical FTS rankings in one SQL round-trip.
 
     Each ranker contributes 1/(RRF_K + rank); a chunk ranked highly by either
-    ranker surfaces, and chunks ranked by both add their contributions.
+    ranker surfaces, and chunks ranked by both add their contributions. embed_text
+    drives the vector side, fts_text the lexical side (they differ only under HyDE).
     """
-    query_vec = embed([query], input_type="query")[0]
+    query = fts_text
+    query_vec = embed([embed_text], input_type="query")[0]
     cand = max(k, HYBRID_CANDIDATES)  # per-ranker pool depth before fusion
     vec_where = ("WHERE " + " AND ".join(conds)) if conds else ""
     fts_extra = (" AND " + " AND ".join(conds)) if conds else ""
@@ -225,6 +236,23 @@ def _hybrid_search(query: str, conds: list[str], fparams: list, k: int) -> list[
 _SEARCH = {"dense": _dense_search, "lexical": _lexical_search, "hybrid": _hybrid_search}
 
 
+def _rrf_fuse(rank_lists: list[list[dict]]) -> list[dict]:
+    """RRF-fuse several ranked chunk-dict lists into one ranked list, by chunk id."""
+    scores: dict[int, float] = {}
+    by_id: dict[int, dict] = {}
+    for chunks in rank_lists:
+        for rank, c in enumerate(chunks, start=1):
+            scores[c["id"]] = scores.get(c["id"], 0.0) + 1.0 / (RRF_K + rank)
+            by_id[c["id"]] = c
+    ranked = sorted(scores, key=lambda i: scores[i], reverse=True)
+    out = []
+    for i in ranked:
+        item = dict(by_id[i])
+        item["rrf"] = scores[i]
+        out.append(item)
+    return out
+
+
 def retrieve(
     query: str,
     *,
@@ -234,12 +262,17 @@ def retrieve(
     mode: str | None = None,
     rerank: bool | None = None,
     candidates: int | None = None,
+    rewrite: str | None = None,
 ) -> list[dict]:
     """Return top-k chunks for a query.
 
     mode: dense | lexical | hybrid (defaults to RETRIEVAL_MODE env).
     rerank: re-order a larger candidate pool down to top_k (defaults to
             RERANK_ENABLED env). candidates sets the pool size.
+    rewrite: none | multi_query | hyde (defaults to QUERY_REWRITE env). multi_query
+            issues several LLM paraphrases and RRF-fuses their results; hyde embeds
+            an LLM-written hypothetical answer instead of the question (FTS and the
+            reranker still use the original query). Wave 3e.
     Each returned dict has keys: id, content, section, chunk_index, metadata,
     plus a score key (distance / score / rrf).
     """
@@ -247,14 +280,36 @@ def retrieve(
     mode = (mode or config.retrieval_mode()).lower()
     if mode not in _VALID_MODES:
         raise ValueError(f"Unknown retrieval mode {mode!r}; expected one of {_VALID_MODES}")
+    rewrite = (rewrite or config.query_rewrite_mode()).lower()
+    if rewrite not in _VALID_REWRITES:
+        raise ValueError(f"Unknown query rewrite {rewrite!r}; expected one of {_VALID_REWRITES}")
     do_rerank = config.rerank_enabled() if rerank is None else rerank
     pool = (candidates or config.rerank_candidates()) if do_rerank else input_data.top_k
 
-    conds, fparams = _filter_conditions(input_data)
-    results = _SEARCH[mode](input_data.query, conds, fparams, pool)
+    # Multi-query: expand to paraphrases, retrieve each (no further rewrite), fuse.
+    if rewrite == "multi_query":
+        from src.query_rewrite import multi_query as _gen_multi
+
+        variants = _gen_multi(input_data.query, n=_MULTI_QUERY_N)
+        lists = [
+            retrieve(v, ticker=ticker, period=period, top_k=pool, mode=mode,
+                     rerank=False, rewrite="none")
+            for v in variants
+        ]
+        results = _rrf_fuse(lists)
+    else:
+        # HyDE swaps only the text that gets embedded; FTS keeps the real query.
+        embed_text = input_data.query
+        if rewrite == "hyde":
+            from src.query_rewrite import hyde as _gen_hyde
+
+            embed_text = _gen_hyde(input_data.query)
+        conds, fparams = _filter_conditions(input_data)
+        results = _SEARCH[mode](embed_text, input_data.query, conds, fparams, pool)
 
     if do_rerank and results:
-        # Imported lazily — reranking is an optional service path.
+        # Imported lazily — reranking is an optional service path. Always rerank
+        # against the ORIGINAL query, never a HyDE/paraphrase.
         from src.rerank import rerank as rerank_passages
 
         results = rerank_passages(input_data.query, results, top_k=input_data.top_k)

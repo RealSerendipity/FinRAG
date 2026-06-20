@@ -106,6 +106,12 @@ def test_retrieve_rejects_unknown_mode() -> None:
         retrieve("revenue", ticker="AAPL", top_k=5, mode="banana")
 
 
+def test_retrieve_rejects_unknown_rewrite() -> None:
+    # Query-rewrite mode is validated before any embedding/DB work (Wave 3e).
+    with pytest.raises(ValueError, match="Unknown query rewrite"):
+        retrieve("revenue", ticker="AAPL", top_k=5, rewrite="banana")
+
+
 def test_rerank_empty_is_noop() -> None:
     assert rerank("q", [], top_k=5) == []
 

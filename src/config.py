@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # ----- Ingestion / retrieval (Wave 3) -----
     CHUNK_STRATEGY: str = "fixed"
     RETRIEVAL_MODE: str = "dense"
+    QUERY_REWRITE: str = "none"
     RERANK_ENABLED: bool = False
     RERANK_CANDIDATES: int = Field(default=50, ge=1, le=1000)
     RERANKER_PROVIDER: str = "nvidia"
@@ -301,13 +302,18 @@ def embedding_provider() -> str:
 # ----- Ingestion / retrieval (Wave 3) -----
 
 def chunk_strategy() -> str:
-    """Active chunking strategy: fixed | sentence_window | parent_doc."""
+    """Active chunking strategy: fixed | sentence_window | section | parent_doc."""
     return _get_settings().CHUNK_STRATEGY.lower()
 
 
 def retrieval_mode() -> str:
     """Active retrieval strategy: dense | lexical | hybrid."""
     return _get_settings().RETRIEVAL_MODE.lower()
+
+
+def query_rewrite_mode() -> str:
+    """Active query-rewrite strategy: none | multi_query | hyde (Wave 3e)."""
+    return _get_settings().QUERY_REWRITE.lower()
 
 
 def rerank_enabled() -> bool:

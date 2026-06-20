@@ -25,10 +25,16 @@ Every retrieval change in this project is justified by the eval harness, not by
 intuition. Wave 2 froze a baseline; Wave 3 changed only the retrieval pipeline
 and re-ran the *same* suite. Result:
 
-**Eval config** (both columns): `fixed` chunking · 38-item suite · generator
-`meta/llama-3.3-70b-instruct` · judge `nvidia/llama-3.3-nemotron-super-49b-v1` ·
-temperature 0. The only variable between columns is **retrieval**: Wave 2 = dense,
-Wave 3 = hybrid RRF + cross-encoder rerank.
+**Eval config** — identical for both columns except retrieval:
+
+| Setting | Value |
+| --- | --- |
+| Chunking | `fixed` |
+| Suite | 38 items |
+| Generator | `meta/llama-3.3-70b-instruct` |
+| Judge | `nvidia/llama-3.3-nemotron-super-49b-v1` |
+| Temperature | 0 |
+| Retrieval *(the only variable)* | Wave 2 = dense · Wave 3 = hybrid RRF + cross-encoder rerank |
 
 | Metric | Wave 2 (dense baseline) | Wave 3 (hybrid + rerank) | Δ |
 | --- | --- | --- | --- |
@@ -82,10 +88,12 @@ methodology and per-category tables in `eval/reports/wave_3{a..f}.md`; each
 | 3b | table-aware ingestion (Docling) | numeric+table recall@10 0.738→0.671, **MRR +0.042** | no — extraction lossy on SEC HTML; mixed |
 | 3c | hybrid pgvector + tsvector RRF | recall@10 0.722→**0.753** (+0.031), MRR +0.038 | ✅ `RETRIEVAL_MODE=hybrid` |
 | 3d | cross-encoder rerank (top-50→10) | recall@10 0.753→**0.885**, MRR 0.681→0.801, nDCG→0.798 | ✅ `RERANK_ENABLED=1` (biggest win) |
-| 3e | query rewriting (under-specified queries) | HyDE recall@10 0.622→**0.676** (+0.054); multi-query −0.017 | HyDE available, off by default |
+| 3e | query rewriting (under-specified queries) | HyDE recall@10 0.622→**0.676** (+0.054); multi-query −0.017 | configurable `QUERY_REWRITE=multi_query\|hyde`; default `none` |
 | 3f | embedding: NVIDIA vs Gemini | Gemini recall@10 0.722→**0.788** (+0.066), MRR +0.190 — but 3× dim/cost | no — keep index-matched 1024-d NVIDIA |
 
 **Shipped default: fixed chunking + hybrid RRF + rerank** → recall@10 **0.722 → 0.885**, MRR **0.643 → 0.801**, nDCG@10 **0.610 → 0.798** (dense baseline → winning config; reranker `nvidia/rerank-qa-mistral-4b`, the model served on this account in place of the plan's `-v3`).
+
+**Why `QUERY_REWRITE=none` by default (3e):** against the raw baseline, HyDE trades top-rank precision (MRR −0.038 / nDCG −0.035 / recall@5 −0.047) for coverage (recall@10 +0.054 / hit@5 +0.083 / hit@10 +0.055), and multi-query is roughly neutral — neither is a clean win. The shipped path also keeps ticker/period metadata filtering, which already disambiguates the vague queries rewriting targets, and each rewrite adds an LLM call. So it ships off but stays a per-call toggle. Full per-metric breakdown and the under-specified test setup: [`eval/reports/wave_3e.md`](eval/reports/wave_3e.md).
 
 ## Stack (cloud APIs only — no local services)
 
@@ -139,9 +147,11 @@ split before embedding; retrieval and answering are unchanged. An unknown value
 fails fast (before any EDGAR/embedding work).
 
 ```bash
+# choose per run with the CLI flag:
 uv run finrag ingest --tickers AAPL --year 2024 --chunk-strategy section
-# or via env:
-CHUNK_STRATEGY=parent_doc uv run finrag ingest --tickers AAPL --year 2024
+
+# or set the default in .env (CHUNK_STRATEGY=section) and run normally:
+uv run finrag ingest --tickers AAPL --year 2024
 ```
 
 | Strategy | What it does |
