@@ -363,7 +363,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=None, help="run only the first N items")
     parser.add_argument("--out", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--suite", choices=("rag", "agent"), default="rag",
+        help="rag = Wave 2 retrieval/generation eval; agent = Wave 4 agent eval",
+    )
     args = parser.parse_args()
+
+    # The agent suite (Wave 4) is a separate harness; delegate and forward flags.
+    if args.suite == "agent":
+        from eval import agent_eval
+
+        agent_argv = []
+        if args.limit:
+            agent_argv += ["--limit", str(args.limit)]
+        if args.out != DEFAULT_REPORT:
+            agent_argv += ["--out", str(args.out)]
+        agent_eval.main(agent_argv)
+        return
 
     check_env()
     items = load_questions(QUESTIONS_PATH)

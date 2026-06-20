@@ -58,6 +58,17 @@ def cik_for_ticker(ticker: str) -> int:
     return company_info_for_ticker(ticker).cik
 
 
+def company_concept(ticker: str, tag: str, *, taxonomy: str = "us-gaap") -> dict:
+    """Return the parsed XBRL company-concept payload for a ticker + GAAP tag.
+
+    Resolves the ticker to a CIK and fetches the concept's full reporting history
+    from EDGAR. Raises ValueError if the ticker is unknown; propagates
+    httpx.HTTPStatusError (404) when the company never reported the tag.
+    """
+    cik = cik_for_ticker(ticker)
+    return json.loads(edgar_client.get_company_concept(cik, taxonomy, tag))
+
+
 def _iter_filing_pages(subs: dict) -> list[dict]:
     """Yield the recent filings dict, then any paginated historical filing pages."""
     pages = [subs["filings"]["recent"]]

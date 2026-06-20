@@ -69,7 +69,7 @@ per-step ablations: [`eval/reports/wave_3{a..f}.md`](eval/reports/) (also in the
 | 1.5  | Mini-eval over real AAPL FY2024 10-K (n=7, 6 positive + 1 insufficient) + prompt `v1.1` (insufficient-context returned as JSON, not bare text) | ✅ shipped | hit@5 / recall@5 / MRR / nDCG@5 / structural citation validity / LLM-judge faithfulness — numbers in [`eval/reports/wave1_5_mini_eval.md`](eval/reports/wave1_5_mini_eval.md) |
 | 2    | Eval harness (38 curated items × 5 categories, NIM judge + Gemini fallback)                                            | ✅ shipped | recall@10 0.80 / MRR 0.64 / nDCG@10 0.65 / citation validity 0.82 / faithfulness 0.84 / correctness 0.84 — details in [`eval/reports/wave_2.md`](eval/reports/wave_2.md) |
 | 3    | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite)                                           | ✅ shipped | recall@10 0.72 → **0.885** (hybrid + rerank); see [ablation table](#wave-3-retrieval-ablations) |
-| 4    | ReAct agent + tools, then LangGraph migration                                                                          | ⏳         | task success rate                                            |
+| 4    | Hand-written ReAct agent + 5 tools, then LangGraph rewrite                                                              | ✅ shipped | task success **0.94** (17/18) · tool-call accuracy 1.00 · avg 3.0 steps — [`eval/reports/wave_4.md`](eval/reports/wave_4.md), A/B in [`wave_4_langgraph_compare.md`](eval/reports/wave_4_langgraph_compare.md) |
 | 5A   | Public demo (FastAPI + Streamlit deployed)                                                                             | ⏳         | demo URL, citation UI                                        |
 | 5B   | Observability, cost, streaming, caching                                                                                | ⏳         | p50 latency, $/query (before/after)                          |
 | 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ⏳         | attack-success-rate ↓                                        |
@@ -94,6 +94,46 @@ methodology and per-category tables in `eval/reports/wave_3{a..f}.md`; each
 **Shipped default: fixed chunking + hybrid RRF + rerank** → recall@10 **0.722 → 0.885**, MRR **0.643 → 0.801**, nDCG@10 **0.610 → 0.798** (dense baseline → winning config; reranker `nvidia/rerank-qa-mistral-4b`, the model served on this account in place of the plan's `-v3`).
 
 **Why `QUERY_REWRITE=none` by default (3e):** against the raw baseline, HyDE trades top-rank precision (MRR −0.038 / nDCG −0.035 / recall@5 −0.047) for coverage (recall@10 +0.054 / hit@5 +0.083 / hit@10 +0.055), and multi-query is roughly neutral — neither is a clean win. The shipped path also keeps ticker/period metadata filtering, which already disambiguates the vague queries rewriting targets, and each rewrite adds an LLM call. So it ships off but stays a per-call toggle. Full per-metric breakdown and the under-specified test setup: [`eval/reports/wave_3e.md`](eval/reports/wave_3e.md).
+
+## Wave 4 — ReAct agent + tools
+
+A hand-written ReAct loop ([`src/agent.py`](src/agent.py)) — Thought → Action →
+Observation, no agent framework — over five tools:
+
+| Tool | Source | Use |
+| ---- | ------ | --- |
+| `retrieve_filing` | hybrid + rerank retriever (Wave 3) | narrative / qualitative facts in ingested filings |
+| `lookup_metric` | SEC XBRL `companyconcept` API | one audited annual figure (no RAG) |
+| `compare_companies` | SEC XBRL | the same metric across companies, side by side |
+| `calculator` | AST eval (no `eval`) | ratios, % change, sums |
+| `web_search` | Tavily (optional) | out-of-corpus facts |
+
+The split is deliberate: numeric questions hit structured XBRL, not chunked prose.
+Every run logs a replayable JSONL trace to `runs/<id>.jsonl`; the agent keeps a
+small session memory (last N Q/A). Over an 18-task multi-step suite
+([`eval/agent_questions.jsonl`](eval/agent_questions.jsonl)):
+
+| Metric | Result |
+| ------ | ------ |
+| task success (LLM-judge correctness) | **0.94** (17/18; the one miss is a stale ground-truth figure, not an agent error) |
+| tool-call accuracy | **1.00** |
+| average steps / task | **3.0** (≤ 6 target) |
+
+The same loop is rewritten on LangGraph ([`src/agent_lg.py`](src/agent_lg.py)) as a
+two-node `StateGraph`; both produce identical tool sequences — see the A/B in
+[`eval/reports/wave_4_langgraph_compare.md`](eval/reports/wave_4_langgraph_compare.md).
+Run it: `uv run python -m src.agent "..."` or `uv run python eval/run_eval.py --suite agent`.
+
+> **Design choice — text ReAct vs native tool-calling.** This loop is deliberately
+> *text-based*: the model emits `Thought / Action / Action Input (JSON) / Final
+> Answer` as plain text and the loop **terminates on `Final Answer:`**, not on the
+> API's `tool_calls` field. The cost is depending on the model to honor the format
+> (handled with single-arg coercion, a same-line lookahead, and client-side
+> truncation at `\nObservation:`); the payoff is that any chat model works with
+> **zero code change** — only `LLM_PROVIDER` changes — verified live on both NVIDIA
+> and Gemini. Native function-calling is more robust in production (the API
+> guarantees structure) but provider-specific; a three-way bench (text /
+> LangGraph / native function-calling) is planned as `execution.md` **7.fc**.
 
 ## Stack (cloud APIs only — no local services)
 
@@ -187,7 +227,8 @@ src/
   retrieve.py        # vector / FTS / hybrid (RRF) / rerank retrieval
   query_rewrite.py   # normalize / multi-query / HyDE (Wave 3e)
   rag.py             # retrieve → prompt → Answer (pydantic)
-  agent.py           # ReAct loop
+  agent.py           # hand-written ReAct loop + session memory, JSONL traces (Wave 4)
+  agent_lg.py        # same loop rewritten on LangGraph (Wave 4 A/B)
   api.py             # FastAPI
   ui.py              # Streamlit
   guardrails.py      # input/output filters
@@ -203,12 +244,18 @@ src/
     edgar.py
     schemas.py
     table_extract.py # Docling table-aware extraction (Wave 3b)
-  tools/             # financial tools used by the agent
-prompts/             # versioned prompt files
+  tools/             # agent tools (Wave 4): spec + registry, and one file per concern
+    spec.py          #   Tool dataclass (shared, avoids an import cycle)
+    calculator.py    #   safe arithmetic (AST, no eval)
+    retrieve_filing.py #  semantic search over ingested filing text
+    xbrl.py          #   lookup_metric + compare_companies via SEC XBRL
+    web_search.py    #   Tavily web search (optional; needs TAVILY_API_KEY)
+prompts/             # versioned prompt files (answer_v*, react_v1)
 sql/                 # schema migrations
 data/                # raw / processed / fixtures
-eval/                # questions, red-team set, metrics, reports
+eval/                # questions, agent suite, metrics, reports
 experiments/         # ablation scripts
+runs/                # agent run traces, one JSONL per run (gitignored)
 tests/               # pytest suites
 edge/                # Cloudflare Worker source
 .env.example

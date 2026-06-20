@@ -11,10 +11,23 @@ _client = httpx.Client(timeout=60, follow_redirects=True)
 
 
 def fetch(url: str, *, headers: dict[str, str], retries: int = 3) -> bytes:
-    """GET with exponential back-off on 429 / 5xx. Raises httpx.HTTPStatusError on final failure."""
+    """GET with exponential back-off on 429 / 5xx and transient transport errors.
+
+    Raises httpx.HTTPStatusError (or httpx.TransportError) on final failure. SEC
+    endpoints intermittently drop the TLS connection (SSL EOF / connect reset);
+    retrying transport errors keeps ingest and the XBRL tool from failing on a
+    single blip — the same resilience pattern used by db.py and the NVIDIA client.
+    """
     delay = 1.0
     for attempt in range(retries):
-        resp = _client.get(url, headers=headers)
+        try:
+            resp = _client.get(url, headers=headers)
+        except httpx.TransportError:
+            if attempt < retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt < retries - 1:
                 time.sleep(delay)

@@ -37,6 +37,7 @@ _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 _SUBMISSIONS_EXTRA_URL = "https://data.sec.gov/submissions/{name}"
 _ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{doc}"
+_CONCEPT_URL = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{tag}.json"
 
 
 def get_tickers() -> bytes:
@@ -62,3 +63,15 @@ def document_url(cik: int, accession_nodash: str, doc: str) -> str:
 def get_document(cik: int, accession_nodash: str, doc: str) -> bytes:
     """Fetch a 10-K or other filing document from EDGAR archives."""
     return _http.fetch(document_url(cik, accession_nodash, doc), headers=_headers())
+
+
+def get_company_concept(cik: int, taxonomy: str, tag: str) -> bytes:
+    """Fetch every reported value of one XBRL concept for a company.
+
+    Backs the Wave 4 `lookup_metric` tool. The structured XBRL Financial
+    Statements API returns audited numeric facts (no RAG / chunking), so numeric
+    questions go straight to the source. Raises httpx.HTTPStatusError (404) when
+    the company never reported the tag.
+    """
+    url = _CONCEPT_URL.format(cik=cik, taxonomy=taxonomy, tag=tag)
+    return _http.fetch(url, headers=_headers())
