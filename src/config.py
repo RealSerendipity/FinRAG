@@ -12,7 +12,10 @@ from pydantic_settings import BaseSettings, NoDecode
 load_dotenv()
 
 # ----- LLM -----
-_KNOWN_PROVIDERS = ("gemini", "anthropic", "openai", "nvidia")
+# nvidia is the primary provider (generation + judge); the closed providers are
+# backups. Order here is cosmetic (used only in error messages); membership, not
+# position, drives dispatch.
+_KNOWN_PROVIDERS = ("nvidia", "gemini", "anthropic", "openai")
 
 CommaList = Annotated[list[str], NoDecode]
 
@@ -30,6 +33,7 @@ class Settings(BaseSettings):
     ANTHROPIC_MODELS: CommaList = Field(default_factory=list)
     OPENAI_MODELS: CommaList = Field(default_factory=list)
     NVIDIA_MODELS: CommaList = Field(default_factory=list)
+    EMBEDDING_PROVIDER: str = "nvidia"
     EMBEDDING_MODEL: str = ""
     EMBEDDING_DIM: int | None = Field(default=None, gt=0)
     NVIDIA_BASE_URL: str = ""
@@ -39,6 +43,16 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
     NVIDIA_API_KEY: str | None = None
+    VOYAGE_API_KEY: str | None = None
+    COHERE_API_KEY: str | None = None
+    # ----- Ingestion / retrieval (Wave 3) -----
+    CHUNK_STRATEGY: str = "fixed"
+    RETRIEVAL_MODE: str = "dense"
+    RERANK_ENABLED: bool = False
+    RERANK_CANDIDATES: int = Field(default=50, ge=1, le=1000)
+    RERANKER_PROVIDER: str = "nvidia"
+    RERANKER_MODEL: str = ""
+    RERANKER_BASE_URL: str = ""
 
     @field_validator(
         "GEMINI_MODELS",
@@ -213,9 +227,10 @@ def llm_model(provider: str | None = None) -> str:
 def judge_provider() -> str:
     """Return the provider used for evaluation judging.
 
-    Defaults to LLM_PROVIDER when LLM_JUDGE_PROVIDER is unset, but production
-    setups should point this at a separate, stronger provider to avoid the
-    generator grading its own outputs.
+    Defaults to LLM_PROVIDER when LLM_JUDGE_PROVIDER is unset. The judge should be
+    at least as capable as the generator (and ideally a different model/family) so
+    it doesn't rubber-stamp the generator's own outputs. Current setup keeps the
+    judge on NVIDIA too (a stronger model), with closed providers as backup.
     """
     return (_get_settings().LLM_JUDGE_PROVIDER or llm_provider()).lower()
 
@@ -277,3 +292,39 @@ def embedding_dim() -> int:
 
 def nvidia_base_url() -> str:
     return _required_env_value("NVIDIA_BASE_URL", _get_settings().NVIDIA_BASE_URL)
+
+
+def embedding_provider() -> str:
+    return _get_settings().EMBEDDING_PROVIDER.lower()
+
+
+# ----- Ingestion / retrieval (Wave 3) -----
+
+def chunk_strategy() -> str:
+    """Active chunking strategy: fixed | sentence_window | parent_doc."""
+    return _get_settings().CHUNK_STRATEGY.lower()
+
+
+def retrieval_mode() -> str:
+    """Active retrieval strategy: dense | lexical | hybrid."""
+    return _get_settings().RETRIEVAL_MODE.lower()
+
+
+def rerank_enabled() -> bool:
+    return _get_settings().RERANK_ENABLED
+
+
+def rerank_candidates() -> int:
+    return _get_settings().RERANK_CANDIDATES
+
+
+def reranker_provider() -> str:
+    return _get_settings().RERANKER_PROVIDER.lower()
+
+
+def reranker_model() -> str:
+    return _required_env_value("RERANKER_MODEL", _get_settings().RERANKER_MODEL)
+
+
+def reranker_base_url() -> str:
+    return _required_env_value("RERANKER_BASE_URL", _get_settings().RERANKER_BASE_URL)

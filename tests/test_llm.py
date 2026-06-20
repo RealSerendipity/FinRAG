@@ -1,8 +1,8 @@
 """Wave 0 smoke tests for the LLM dispatch.
 
 Each provider test runs only when its API key is set; otherwise it is skipped.
-The Gemini test is the project's primary path and should pass in any properly
-configured environment.
+NVIDIA NIM is the project's primary path (generation + judge) and should pass in
+any properly configured environment; the closed providers are backups.
 """
 
 from __future__ import annotations
@@ -51,7 +51,12 @@ def test_chat_hello_world(provider: str, env_var: str) -> None:
         msg = str(exc).lower()
         if any(
             k in msg
-            for k in ("quota", "rate_limit", "insufficient_quota", "credit", "billing", "429")
+            for k in (
+                "quota", "rate_limit", "insufficient_quota", "credit", "billing", "429",
+                # Transient provider unavailability (e.g. Gemini "high demand") must
+                # clean-skip, not fail the suite (rule §3.8).
+                "503", "unavailable", "high demand", "overloaded", "resource_exhausted",
+            )
         ):
             pytest.skip(f"{provider} quota/rate-limit: {exc}")
         raise

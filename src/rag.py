@@ -64,6 +64,66 @@ class RagAskInput(BaseModel):
         return value
 
 
+def _context_text(chunk: dict) -> str:
+    """Generation context for a retrieved chunk: parent_text if present, else content.
+
+    parent_doc chunking (Wave 3a) embeds a small child for precise retrieval but
+    stores the surrounding parent block in metadata.parent_text; other strategies
+    have no parent_text and fall back to the chunk's own content.
+    """
+    parent = (chunk.get("metadata") or {}).get("parent_text")
+    return parent or chunk["content"]
+
+
+def _iter_json_objects(raw: str):
+    """Yield every balanced top-level {...} substring, ignoring braces inside strings."""
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for i, ch in enumerate(raw):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                yield raw[start : i + 1]
+
+
+def _extract_answer_obj(raw: str) -> dict | None:
+    """Return the last Answer-shaped JSON object in raw, else the last valid object.
+
+    Prefers the final object that has both `text` and `citations` (the schema) so a
+    reasoning model's last answer wins over its intermediate JSON attempts.
+    """
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    objs: list[dict] = []
+    for candidate in ([raw] if raw.startswith("{") else []) + \
+            ([fenced.group(1)] if fenced else []) + list(_iter_json_objects(raw)):
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            objs.append(obj)
+    shaped = [o for o in objs if "text" in o and "citations" in o]
+    if shaped:
+        return shaped[-1]
+    return objs[-1] if objs else None
+
+
 def ask(
     question: str,
     *,
@@ -85,9 +145,11 @@ def ask(
     if not chunks:
         raise ValueError("No chunks found for this query. Run ingest first.")
 
-    # Format context for the prompt.
+    # Format context for the prompt. parent_doc chunks store the larger parent
+    # block in metadata.parent_text — feed that to the LLM (retrieve small/precise,
+    # generate with full context) while citations still map to the retrieved chunk_id.
     context = "\n\n".join(
-        f"[chunk_id={c['id']}]\n{c['content']}" for c in chunks
+        f"[chunk_id={c['id']}]\n{_context_text(c)}" for c in chunks
     )
     prompt = (
         _PROMPT_TEMPLATE
@@ -97,27 +159,13 @@ def ask(
 
     resp = chat(messages=[{"role": "user", "content": prompt}])
 
-    # Extract JSON from LLM response.
-    # Strategy: try raw → fenced block → first-`{`-to-last-`}` span.
+    # Extract the Answer JSON from the LLM response. Reasoning-capable models may
+    # emit chain-of-thought and *several* JSON objects (intermediate attempts) with
+    # prose between them, so a single first-`{`-to-last-`}` span fails. We scan all
+    # balanced top-level {...} objects and keep the LAST Answer-shaped one (the
+    # model's final answer), falling back to the raw/fenced text.
     raw = resp.text.strip()
-    data: dict | None = None
-    candidates: list[str] = [raw]
-
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.DOTALL)
-    if fenced:
-        candidates.insert(0, fenced.group(1))
-
-    span = re.search(r"\{.*\}", raw, re.DOTALL)  # greedy: first { to last }
-    if span:
-        candidates.append(span.group())
-
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-            break
-        except json.JSONDecodeError:
-            continue
-
+    data = _extract_answer_obj(raw)
     if data is None:
         raise ValueError(f"LLM did not return valid JSON. Response: {raw!r}")
 

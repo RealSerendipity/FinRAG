@@ -19,6 +19,7 @@ import click
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.db import bootstrap
+from src.ingest import VALID_CHUNK_STRATEGIES
 from src.ingest import ingest as run_ingest
 from src.rag import ask as run_ask
 
@@ -50,6 +51,14 @@ class IngestInput(BaseModel):
     form_type: Literal["10-K", "10-Q", "8-K", "20-F", "DEF 14A"] = "10-K"
     year: int | None = Field(default=None, ge=1994, le=2030)
     period: str | None = None
+    chunk_strategy: str | None = None
+
+    @field_validator("chunk_strategy", mode="after")
+    @classmethod
+    def _validate_chunk_strategy(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_CHUNK_STRATEGIES:
+            raise ValueError(f"must be one of {', '.join(VALID_CHUNK_STRATEGIES)}")
+        return value
 
     @field_validator("tickers", mode="before")
     @classmethod
@@ -123,10 +132,14 @@ def cli() -> None:
               help="Fiscal year (period-of-report), e.g. 2024. Used when --period is omitted.")
 @click.option("--period", default=None,
               help="Explicit period string: FY2024, 2024, 2024-03-29. Overrides --year.")
-def ingest(tickers: str, form_type: str, year: int | None, period: str | None) -> None:
+@click.option("--chunk-strategy", default=None, type=click.Choice(VALID_CHUNK_STRATEGIES),
+              help="Chunking strategy (default: CHUNK_STRATEGY env, else fixed).")
+def ingest(tickers: str, form_type: str, year: int | None, period: str | None,
+           chunk_strategy: str | None) -> None:
     """Fetch and ingest SEC filings into the vector store."""
     try:
-        parsed = IngestInput(tickers=tickers, form_type=form_type, year=year, period=period)
+        parsed = IngestInput(tickers=tickers, form_type=form_type, year=year, period=period,
+                             chunk_strategy=chunk_strategy)
     except ValidationError as exc:
         _raise_usage_error(exc)
     if parsed.period is None and parsed.year is None:
@@ -145,6 +158,7 @@ def ingest(tickers: str, form_type: str, year: int | None, period: str | None) -
                 form_type=parsed.form_type,
                 period=parsed.period,
                 fiscal_year=parsed.year,
+                chunk_strategy=parsed.chunk_strategy,
             )
             elapsed = time.monotonic() - t0
             click.echo(f" done ({chunk_count} chunks, {elapsed:.1f}s)")

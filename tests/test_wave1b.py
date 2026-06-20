@@ -38,7 +38,11 @@ def test_retrieve_filter_limits_results() -> None:
 def test_retrieve_distance_ascending() -> None:
     _skip_unless("DATABASE_URL", "NVIDIA_API_KEY")
     from src.retrieve import retrieve
-    results = retrieve("net income profit margin", ticker="DEMO", top_k=3)
+    # Pin the dense path: the default mode is now env-driven (hybrid + rerank, Wave 3),
+    # which returns rrf/rerank scores; this test asserts the dense distance ordering.
+    results = retrieve(
+        "net income profit margin", ticker="DEMO", top_k=3, mode="dense", rerank=False
+    )
     distances = [r["distance"] for r in results]
     assert distances == sorted(distances), "Results must be ordered by ascending distance"
 

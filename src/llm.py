@@ -1,4 +1,5 @@
-"""Four-provider LLM dispatch — Gemini (primary), Anthropic, OpenAI, NVIDIA NIM.
+"""Four-provider LLM dispatch — NVIDIA NIM (primary: generation + judge);
+Gemini, Anthropic, OpenAI as backups.
 
 Single-file `if/elif` dispatch by design. Each provider branch owns its own
 SDK import (lazy), message-format conversion, and usage extraction. We do not
@@ -73,7 +74,7 @@ def chat(
 
 
 # --------------------------------------------------------------------------- #
-# Gemini (primary)
+# Gemini (backup)
 # --------------------------------------------------------------------------- #
 def _chat_gemini(
     messages: list[Message],
@@ -180,7 +181,7 @@ def _chat_openai(
 
 
 # --------------------------------------------------------------------------- #
-# NVIDIA NIM (open-weight via OpenAI-compatible endpoint)
+# NVIDIA NIM (primary — generation + judge; open-weight via OpenAI-compatible endpoint)
 # --------------------------------------------------------------------------- #
 def _chat_nvidia(
     messages: list[Message],

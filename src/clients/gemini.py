@@ -32,3 +32,19 @@ def generate(
     )
     # Wave 5 will add explicit context caching via client.caches.create(...).
     return client.models.generate_content(model=model, contents=contents, config=cfg)
+
+
+def create_embeddings(
+    texts: list[str], *, api_key: str, model: str, task_type: str
+) -> list[list[float]]:
+    """Embed texts with a Gemini embedding model; return vectors in input order."""
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+    resp = client.models.embed_content(
+        model=model,
+        contents=texts,
+        config=types.EmbedContentConfig(task_type=task_type),
+    )
+    return [e.values for e in resp.embeddings]

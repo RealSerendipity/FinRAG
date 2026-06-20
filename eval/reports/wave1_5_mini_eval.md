@@ -4,17 +4,17 @@
 - Items: 7 (6 positive + 1 insufficient-context)
 - `top_k = 5`, ground-truth probe `K_max = 50`
 - LLM provider: `nvidia` / model: `meta/llama-3.3-70b-instruct`
-- Judge provider: `nvidia` / model: `meta/llama-3.1-70b-instruct`
+- Judge provider: `nvidia` / model: `nvidia/llama-3.3-nemotron-super-49b-v1`
 - Embedding: NVIDIA NeMo Retriever `nv-embedqa-e5-v5`
 
 ## Headline metrics (means over positive items unless noted)
 
-- **hit@5**: 0.83
-- **recall@5**: 0.49
-- **MRR**: 0.75
-- **nDCG@5**: 0.52
-- **citation validity** (all items, structural): 0.71
-- **faithfulness** (LLM-judge over 4/6 positive answers): 1.00
+- **hit@5**: 1.00
+- **recall@5**: 0.87
+- **MRR**: 0.92
+- **nDCG@5**: 0.88
+- **citation validity** (all items, structural): 1.00
+- **faithfulness** (LLM-judge over 6/6 positive answers): 1.00
 
 Ground-truth relevance is approximated by OR-of-AND keyword groups, so `recall@k` and `nDCG@k` use a local denominator (relevants found within top-50). MRR is the reciprocal rank of the first relevant chunk in that top-50 probe; 0 when nothing relevant surfaces. Citation validity is structural: positive items must cite a chunk that matches the relevance predicate; negative items must declare exactly `"Insufficient context"` with no citations.
 
@@ -24,12 +24,12 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 | id | hit@5 | recall@5 | MRR | nDCG@5 | citation valid | faithful | total relevant in top-50 |
 |---|---|---|---|---|---|---|---|
-| `aapl-fy24-total-net-sales` | yes | 0.60 | 1.00 | 0.70 | yes | yes | 5 |
+| `aapl-fy24-total-net-sales` | yes | 0.80 | 0.50 | 0.66 | yes | yes | 5 |
 | `aapl-fy24-iphone-net-sales` | yes | 1.00 | 1.00 | 1.00 | yes | yes | 2 |
-| `aapl-fy24-rd` | yes | 0.50 | 0.33 | 0.31 | yes | yes | 2 |
-| `aapl-fy24-iphone16-launch` | yes | 0.50 | 1.00 | 0.61 | no | not judged | 2 |
-| `aapl-fy24-dividend-per-share` | no | 0.00 | 0.14 | 0.00 | no | not judged | 1 |
-| `aapl-fy24-tax-rate-risk` | yes | 0.33 | 1.00 | 0.51 | yes | yes | 6 |
+| `aapl-fy24-rd` | yes | 1.00 | 1.00 | 1.00 | yes | yes | 2 |
+| `aapl-fy24-iphone16-launch` | yes | 1.00 | 1.00 | 0.92 | yes | yes | 2 |
+| `aapl-fy24-dividend-per-share` | yes | 1.00 | 1.00 | 1.00 | yes | yes | 1 |
+| `aapl-fy24-tax-rate-risk` | yes | 0.43 | 1.00 | 0.68 | yes | yes | 7 |
 | `aapl-fy24-argentina-revenue-insufficient` | — | — | — | — | yes | — | 0 |
 
 ## Answers + judge reasons
@@ -40,15 +40,15 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Expected.** Apple FY2024 total net sales: $391,035M.
 
-**Retrieved top-5 chunk_indexes.** [82, 107, 108, 81, 83]
+**Retrieved top-5 chunk_indexes.** [108, 82, 107, 139, 81]
 
-**Relevant ranks in top-50.** [1, 2, 4, 6, 10]
+**Relevant ranks in top-50.** [2, 3, 4, 5, 7]
 
-**Answer.** Apple's total net sales for fiscal year 2024 were $391,035
+**Answer.** Apple's total net sales for fiscal year 2024 were $391,035 million
 
 **Cited chunk_indexes.** [82]
 
-**Judge faithfulness.** True — Answer directly matches cited total net sales figure.
+**Judge faithfulness.** True — Total net sales figure for 2024 is directly stated in the cited chunk.
 
 **Human pass/fail.** _TBD — fill in after review._
 
@@ -58,7 +58,7 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Expected.** iPhone FY2024 net sales: $201,183M.
 
-**Retrieved top-5 chunk_indexes.** [82, 107, 81, 83, 108]
+**Retrieved top-5 chunk_indexes.** [82, 107, 108, 81, 80]
 
 **Relevant ranks in top-50.** [1, 2]
 
@@ -66,7 +66,7 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Cited chunk_indexes.** [82]
 
-**Judge faithfulness.** True — Directly supported by the cited table.
+**Judge faithfulness.** True — The ANSWER's factual claim is directly supported by the verbatim CITED CHUNKS.
 
 **Human pass/fail.** _TBD — fill in after review._
 
@@ -76,15 +76,15 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Expected.** R&D expense FY2024: $31,370M.
 
-**Retrieved top-5 chunk_indexes.** [85, 87, 95, 83, 119]
+**Retrieved top-5 chunk_indexes.** [95, 84, 85, 122, 99]
 
-**Relevant ranks in top-50.** [3, 18]
+**Relevant ranks in top-50.** [1, 2]
 
 **Answer.** Apple spent $31,370 million on research and development in fiscal year 2024.
 
 **Cited chunk_indexes.** [95]
 
-**Judge faithfulness.** True — Answer directly matches cited data.
+**Judge faithfulness.** True — Direct match of R&D expenditure figure in cited chunk.
 
 **Human pass/fail.** _TBD — fill in after review._
 
@@ -94,13 +94,15 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Expected.** iPhone 16, 16 Plus, 16 Pro, 16 Pro Max.
 
-**Retrieved top-5 chunk_indexes.** [80, 79, 82, 107, 87]
+**Retrieved top-5 chunk_indexes.** [80, 79, 8, 82, 0]
 
-**Relevant ranks in top-50.** [1, 12]
+**Relevant ranks in top-50.** [1, 3]
 
-**Answer.** Insufficient context
+**Answer.** iPhone 16, iPhone 16 Plus, iPhone 16 Pro and iPhone 16 Pro Max
 
-**Cited chunk_indexes.** []
+**Cited chunk_indexes.** [80]
+
+**Judge faithfulness.** True — ANSWER is a direct verbatim list from CITED CHUNKS.
 
 **Human pass/fail.** _TBD — fill in after review._
 
@@ -110,13 +112,15 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Expected.** Quarterly dividend: $0.25 per share.
 
-**Retrieved top-5 chunk_indexes.** [102, 99, 119, 108, 94]
+**Retrieved top-5 chunk_indexes.** [88, 99, 95, 79, 109]
 
-**Relevant ranks in top-50.** [7]
+**Relevant ranks in top-50.** [1]
 
-**Answer.** Insufficient context
+**Answer.** The quarterly cash dividend per share was $0.25.
 
-**Cited chunk_indexes.** []
+**Cited chunk_indexes.** [88]
+
+**Judge faithfulness.** True — The answer directly quotes a verbatim fact from the cited chunk.
 
 **Human pass/fail.** _TBD — fill in after review._
 
@@ -126,15 +130,15 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Expected.** Risk factors mention tax-rate changes, new tax legislation, and additional liabilities.
 
-**Retrieved top-5 chunk_indexes.** [67, 91, 68, 93, 63]
+**Retrieved top-5 chunk_indexes.** [67, 68, 59, 124, 85]
 
-**Relevant ranks in top-50.** [1, 3, 8, 12, 21, 32]
+**Relevant ranks in top-50.** [1, 2, 5, 18, 19, 29, 35]
 
-**Answer.** Apple identifies risks around changes in its effective tax rate, including changes in tax laws or their interpretation, and the introduction of new taxes.
+**Answer.** Apple identifies risks around changes in its effective tax rate due to changes in tax laws, tax rates, and the mix of earnings in countries with differing statutory tax rates.
 
-**Cited chunk_indexes.** [67]
+**Cited chunk_indexes.** [67, 68]
 
-**Judge faithfulness.** True — All claims are directly supported by the cited chunks.
+**Judge faithfulness.** True — ANSWER directly reflects cited risks without addition or paraphrase.
 
 **Human pass/fail.** _TBD — fill in after review._
 
@@ -144,7 +148,7 @@ Caveats: n=7 over a single 10-K — these numbers are illustrative, not a recall
 
 **Expected.** 10-K breaks geography by Americas/Europe/Greater China/Japan/Rest of Asia Pacific — no country-level Argentina figure.
 
-**Retrieved top-5 chunk_indexes.** [82, 81, 107, 137, 139]
+**Retrieved top-5 chunk_indexes.** [81, 82, 108, 139, 107]
 
 **Relevant ranks in top-50.** []
 
