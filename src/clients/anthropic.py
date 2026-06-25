@@ -26,8 +26,12 @@ def complete(
         "messages": messages,
     }
     if system:
-        kwargs["system"] = system
+        # Wave 5B: cache the (stable, large) system prompt as an ephemeral block so
+        # repeat requests read it from cache instead of re-billing input tokens.
+        # Usage comes back with cache_creation / cache_read counts (see llm.py).
+        kwargs["system"] = [
+            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+        ]
     if thinking:
         kwargs["thinking"] = thinking
-    # Wave 5: add cache_control={"type": "ephemeral"} on system + tool blocks here.
     return client.messages.create(**kwargs)

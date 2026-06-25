@@ -18,6 +18,7 @@ from typing import Any, Literal
 import click
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from src import config, cost, obs
 from src.db import bootstrap
 from src.ingest import VALID_CHUNK_STRATEGIES
 from src.ingest import ingest as run_ingest
@@ -187,9 +188,25 @@ def ask(ticker: str, year: int | None, question: str) -> None:
     bootstrap()
     period = str(parsed.year) if parsed.year else None
     t0 = time.monotonic()
-    answer = run_ask(parsed.question, ticker=parsed.ticker, period=period)
+    # One Langfuse trace per CLI ask: the root span nests the retrieve + llm spans
+    # opened inside run_ask, and the meter sums tokens across them (Wave 5B).
+    trace_id = None
+    with obs.request_meter() as meter, obs.span(
+        "cli.ask", input=parsed.question, metadata={"ticker": parsed.ticker, "period": period}
+    ):
+        answer = run_ask(parsed.question, ticker=parsed.ticker, period=period)
+        trace_id = obs.current_trace_id()
     elapsed = time.monotonic() - t0
+    usage = dict(meter)
+    obs.flush()  # export the trace now so it appears in Langfuse within a few seconds
     click.echo(f"\n{answer.text}\n")
     for citation in answer.citations:
         click.echo(f"  [chunk {citation.chunk_id}] {citation.quote!r}")
-    click.echo(f"\n({elapsed:.1f}s)")
+    cost_usd = cost.estimate(config.llm_model(), usage)
+    click.echo(
+        f"\n({elapsed:.1f}s · {usage['input_tokens']}+{usage['output_tokens']} tok "
+        f"· ${cost_usd:.6f})"
+    )
+    url = obs.trace_url(trace_id)
+    if url:
+        click.echo(f"trace: {url}")

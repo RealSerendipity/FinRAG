@@ -1,0 +1,13 @@
+# Run finrag anywhere with Docker. One container runs BOTH services: the Streamlit
+# UI (port 8501, exposed below) and the FastAPI backend (localhost:8000 inside the
+# container). Secrets/config come from .env at runtime via env_file — nothing is
+# baked into the image. After `docker compose up`, open http://localhost:8501.
+# For a public deploy, bind 8501 to localhost and put your own TLS in front.
+services:
+  finrag:
+    build: .
+    image: finrag:latest
+    env_file: .env
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

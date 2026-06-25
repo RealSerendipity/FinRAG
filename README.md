@@ -2,6 +2,21 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+<p align="center">
+  <a href="https://www.realserendipity.org/finrag/">
+    <img alt="Live Demo" src="docs/live-demo-badge.svg">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.realserendipity.org/finrag/">
+    <img alt="finrag — RAG mode answering over Apple's 10-K with citations" src="docs/rag.png" width="820">
+  </a>
+</p>
+
+> ### 🔗 Try it live → **[www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/)**
+> Ask a question over Apple's 10-K and get a **cited, traceable answer** in the browser — no setup.
+
 Retrieval + agent system over SEC EDGAR filings (10-K / 10-Q / 8-K / 20-F / DEF 14A). A
 hands-on LLM application engineering project for financial research workflows,
 structured answers, citations, evaluation, and deployable AI product surfaces.
@@ -70,8 +85,8 @@ per-step ablations: [`eval/reports/wave_3{a..f}.md`](eval/reports/) (also in the
 | 2    | Eval harness (38 curated items × 5 categories, NIM judge + Gemini fallback)                                            | ✅ shipped | recall@10 0.80 / MRR 0.64 / nDCG@10 0.65 / citation validity 0.82 / faithfulness 0.84 / correctness 0.84 — details in [`eval/reports/wave_2.md`](eval/reports/wave_2.md) |
 | 3    | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite)                                           | ✅ shipped | recall@10 0.72 → **0.885** (hybrid + rerank); see [ablation table](#wave-3-retrieval-ablations) |
 | 4    | Hand-written ReAct agent + 5 tools, then LangGraph rewrite                                                              | ✅ shipped | task success **0.94** (17/18) · tool-call accuracy 1.00 · avg 3.0 steps — [`eval/reports/wave_4.md`](eval/reports/wave_4.md), A/B in [`wave_4_langgraph_compare.md`](eval/reports/wave_4_langgraph_compare.md) |
-| 5A   | Public demo (FastAPI + Streamlit deployed)                                                                             | ⏳         | demo URL, citation UI                                        |
-| 5B   | Observability, cost, streaming, caching                                                                                | ⏳         | p50 latency, $/query (before/after)                          |
+| 5A   | Public demo (FastAPI + Streamlit)                                                                                      | ✅ shipped | 4 routes live over HTTP; SSE answers + citation UI; p50 ≈ 12.6s — [`eval/reports/wave_5a.md`](eval/reports/wave_5a.md) |
+| 5B   | Observability, cost, caching                                                                                           | ✅ shipped | Langfuse spans (fail-open) · per-request tokens + `$/query` ($0 on NVIDIA free tier) — [`eval/reports/wave_5b.md`](eval/reports/wave_5b.md) |
 | 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ⏳         | attack-success-rate ↓                                        |
 | 7    | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳         | per-item resume bullets                                      |
 
@@ -137,26 +152,26 @@ Run it: `uv run python -m src.agent "..."` or `uv run python eval/run_eval.py --
 
 ## Stack (cloud APIs only — no local services)
 
-| Layer                       | Primary                                                              | Backup(s)                                     |
+| Layer                       | Primary                                                              | Options                                       |
 | --------------------------- | -------------------------------------------------------------------- | --------------------------------------------- |
 | LLM — generation            | **NVIDIA NIM** `meta/llama-3.3-70b-instruct` (free open-weight)      | Gemini, Anthropic Claude, OpenAI              |
-| LLM — judge (eval)          | **NVIDIA NIM** `nvidia/llama-3.3-nemotron-super-49b-v1` (reasoning-tuned, ≥ generator) | Gemini fallback              |
-| Embedding                   | NVIDIA NeMo Retriever `nvidia/nv-embedqa-e5-v5` (1024d target)       | Gemini `gemini-embedding-001`, Voyage, Cohere |
-| Reranker                    | NVIDIA NeMo Retriever `nvidia/rerank-qa-mistral-4b` (served variant) | Jina `rerank-v2-multilingual`, Cohere         |
-| Vector + lexical store      | **Neon Postgres + pgvector + tsvector FTS**                          | Supabase, Aiven                               |
-| Agent                       | hand-written ReAct → LangGraph (Wave 4)                              | LlamaIndex (Wave 7 comparison)                |
-| Eval                        | hand-written + ragas; NVIDIA NIM judge available                     | Gemini judge fallback                         |
+| LLM — judge (eval)          | **NVIDIA NIM** `nvidia/llama-3.3-nemotron-super-49b-v1` (reasoning-tuned, ≥ generator) | Gemini             |
+| Embedding                   | NVIDIA NeMo Retriever `nvidia/nv-embedqa-e5-v5` (1024d)              | Gemini `gemini-embedding-001`                 |
+| Reranker                    | NVIDIA NeMo Retriever `nvidia/rerank-qa-mistral-4b`                  | —                                             |
+| Vector + lexical store      | **Neon Postgres + pgvector + tsvector FTS**                          | —                                             |
+| Agent                       | hand-written ReAct + LangGraph rewrite (Wave 4)                      | —                                             |
+| Eval                        | hand-written metrics (recall@k / MRR / nDCG + LLM judge)             | —                                             |
 | Tracing                     | Langfuse Cloud                                                       | —                                             |
 | Output validation           | pydantic                                                             | —                                             |
-| Guardrails (Wave 6)         | NVIDIA NemoGuard + custom regex/PII                                  | OpenAI Moderation                             |
-| MCP (Wave 6)                | official `mcp` Python SDK as server                                  | —                                             |
-| API / UI                    | FastAPI + Streamlit                                                  | —                                             |
-| Deployment                  | Render / Railway / Fly.io free tier; Cloudflare Worker for edge demo | —                                             |
+| Guardrails (Wave 6, planned) | NVIDIA NemoGuard + custom regex/PII                                 | —                                             |
+| MCP (Wave 6, planned)       | official `mcp` Python SDK as server                                  | —                                             |
+| API / UI                    | FastAPI (SSE) + Streamlit                                            | —                                             |
+| Deployment                  | Docker / compose on any VPS or free-tier PaaS; front with your own reverse proxy / TLS | —                            |
 
 Provider switching is environment-controlled (`LLM_PROVIDER`,
 `LLM_JUDGE_PROVIDER`, `EMBEDDING_PROVIDER`, `RERANKER_PROVIDER`) and implemented
 as single-file `if/elif` dispatch. NVIDIA NIM is the primary for both generation
-and judging; Gemini / Anthropic / OpenAI are backups. The judge runs a stronger
+and judging; Gemini / Anthropic / OpenAI are optional alternatives. The judge runs a stronger
 model than the generator (`nemotron-super-49b`, reasoning/RL-tuned, ≥ the
 `llama-3.3-70b` generator) at temperature 0 so its verdicts stay trustworthy.
 Model choices are eval-driven: `llama-4-maverick` was rejected as generator (it
@@ -178,6 +193,61 @@ uv run pytest
 uv run finrag ingest --tickers AAPL --year 2024
 uv run finrag ask --ticker AAPL --year 2024 "What was Apple's R&D expense?"
 ```
+
+### Web demo (Wave 5A / 5B)
+
+> **Live:** [www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/) — the Streamlit UI below, with the backend kept private (the UI is the only public surface).
+
+**Fastest — one container runs both the API and the UI:**
+
+```bash
+cp .env.example .env          # fill DATABASE_URL + NVIDIA_API_KEY
+docker compose up --build     # then open http://localhost:8501
+```
+
+The UI has a **RAG / Agent mode toggle** (single-shot cited answer vs. a multi-step
+tool-using agent) and an **ingest panel** to pull a new filing into the store.
+
+| Agent mode — running | Agent mode — multi-step tool trace |
+| :---: | :---: |
+| ![finrag agent running](docs/agent-running.png) | ![finrag agent result](docs/agent-result.png) |
+
+*Agent mode on a multi-step question ("how did Apple's R&D-to-revenue ratio change
+FY2023 → FY2024?"): the ReAct loop calls `lookup_metric` (SEC XBRL) for R&D and
+revenue across both years, then `calculator`, and shows the full reasoning trace.*
+
+Or run the two services directly for development:
+
+```bash
+# Terminal 1 — API.  Docs: http://127.0.0.1:8000/docs
+uv run uvicorn src.api:app --host 0.0.0.0 --port 8000
+
+# Terminal 2 — Streamlit UI (calls the API via FINRAG_API_URL, default :8000)
+uv run streamlit run src/ui.py
+```
+
+```bash
+# Or hit the API directly
+curl http://127.0.0.1:8000/health
+curl -N -X POST http://127.0.0.1:8000/ask -H 'Content-Type: application/json' \
+  -d '{"question":"What was Apple total net sales in fiscal 2024?","ticker":"AAPL","year":2024}'
+```
+
+Routes: `GET /health`, `POST /ask` (SSE: status → answer → done), `POST /agent`
+(ReAct, JSON), `POST /ingest`. Every `/ask` and `/agent` response carries latency,
+token usage, a `$/query` estimate (Wave 5B), and — with `LANGFUSE_*` set — a
+`trace_url` whose trace nests the retrieve / llm / tool spans (tracing is
+fail-open: it never breaks a request).
+
+**Auth & deploy (domain-agnostic).** Set `API_TOKEN` to gate `/ask /agent /ingest`
+behind `Authorization: Bearer <token>` (`/health` stays open); set `API_ROOT_PATH`
+(e.g. `/finrag`) to serve under a path prefix behind a reverse proxy. A typical
+public deploy keeps the **backend on localhost** and puts the **Streamlit UI as the
+only public surface** at a subpath — the UI reaches the API server-side via
+`FINRAG_API_URL` + `FINRAG_API_TOKEN`, so the token never reaches the browser.
+Ship it however you deploy — `docker compose up` ([`Dockerfile`](Dockerfile) /
+[`compose.yaml`](compose.yaml) run both services in one container) — then put it
+behind your own reverse proxy / TLS (or your platform's built-in HTTPS).
 
 ## Chunking strategies
 
@@ -229,10 +299,12 @@ src/
   rag.py             # retrieve → prompt → Answer (pydantic)
   agent.py           # hand-written ReAct loop + session memory, JSONL traces (Wave 4)
   agent_lg.py        # same loop rewritten on LangGraph (Wave 4 A/B)
-  api.py             # FastAPI
-  ui.py              # Streamlit
-  guardrails.py      # input/output filters
-  mcp_server.py      # expose tools as MCP server
+  api.py             # FastAPI: /health /ask (SSE) /agent /ingest (Wave 5A)
+  ui.py              # Streamlit single-page Q&A over /ask (Wave 5A)
+  obs.py             # fail-open Langfuse tracing + per-request token meter (Wave 5B)
+  cost.py            # token → USD estimation (Wave 5B)
+  guardrails.py      # input/output filters                         (Wave 6, planned)
+  mcp_server.py      # expose tools as an MCP server                 (Wave 6, planned)
   clients/           # thin HTTP clients per provider
     _http.py
     anthropic.py
@@ -256,8 +328,11 @@ data/                # raw / processed / fixtures
 eval/                # questions, agent suite, metrics, reports
 experiments/         # ablation scripts
 runs/                # agent run traces, one JSONL per run (gitignored)
+edge/                # Cloudflare Worker source                     (Wave 7, planned)
 tests/               # pytest suites
-edge/                # Cloudflare Worker source
+Dockerfile           # one image, both services (API + Streamlit UI) (Wave 5A)
+compose.yaml         # `docker compose up` → UI on :8501; API stays internal
+deploy/entrypoint.sh # runs API + UI together inside the container
 .env.example
 pyproject.toml
 README.md

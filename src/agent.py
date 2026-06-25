@@ -17,17 +17,21 @@ Public surface
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src import obs
 from src.llm import chat
 from src.tools import REGISTRY, Tool, render_tools, run_tool
 
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "react_v1.txt"
 _PROMPT_TEMPLATE = _PROMPT_PATH.read_text()
-_RUNS_DIR = Path(__file__).parent.parent / "runs"
+# Trace dir defaults to repo/runs; FINRAG_RUNS_DIR overrides it for deploys where
+# the app directory is read-only (containers) — point it at a writable path.
+_RUNS_DIR = Path(os.environ.get("FINRAG_RUNS_DIR") or Path(__file__).parent.parent / "runs")
 
 _MAX_STEPS = 8
 _MEMORY_TURNS = 3
@@ -190,7 +194,10 @@ class Agent:
         result = AgentResult(question=question, trace_path=str(trace_path))
         usage_total = {"input_tokens": 0, "output_tokens": 0}
 
-        with trace_path.open("w") as trace:
+        # Root Langfuse span for the whole run: the per-step llm + tool spans nest
+        # under it, so a CLI or API agent run is one unified trace (Wave 5B).
+        with obs.span("agent", as_type="chain", input=question), \
+                trace_path.open("w") as trace:
             def emit(**record) -> None:
                 trace.write(json.dumps(record) + "\n")
 
@@ -270,6 +277,7 @@ def _main() -> None:
         raise SystemExit(2)
     question = " ".join(sys.argv[1:])
     result = run_agent(question)
+    obs.flush()  # export the Langfuse trace before the process exits
     print()
     for i, step in enumerate(result.steps, start=1):
         if step.action:

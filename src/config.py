@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     RERANKER_PROVIDER: str = "nvidia"
     RERANKER_MODEL: str = ""
     RERANKER_BASE_URL: str = ""
+    # ----- API (Wave 5A) -----
+    # API_ROOT_PATH: path prefix when served behind a proxy (e.g. "/finrag" so a
+    # Cloudflare Worker can route www.example.com/finrag/* to the app). Empty = root.
+    # API_TOKEN: when set, /ask /agent /ingest require `Authorization: Bearer <token>`;
+    # unset disables auth (local dev, tests). /health stays open either way.
+    API_ROOT_PATH: str = ""
+    API_TOKEN: str | None = None
 
     @field_validator(
         "GEMINI_MODELS",
@@ -92,6 +99,7 @@ class Settings(BaseSettings):
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "NVIDIA_API_KEY",
+        "API_TOKEN",
         mode="before",
     )
     @classmethod
@@ -113,6 +121,14 @@ class Settings(BaseSettings):
         if value is None:
             return ""
         return str(value).strip()
+
+    @field_validator("API_ROOT_PATH", mode="before")
+    @classmethod
+    def _normalize_root_path(cls, value: Any) -> str:
+        # Normalize to "" or "/prefix" (leading slash, no trailing slash) — the form
+        # Starlette expects for root_path behind a path-stripping proxy.
+        text = "" if value is None else str(value).strip().strip("/")
+        return f"/{text}" if text else ""
 
     @field_validator("EMBEDDING_DIM", mode="before")
     @classmethod
@@ -334,3 +350,15 @@ def reranker_model() -> str:
 
 def reranker_base_url() -> str:
     return _required_env_value("RERANKER_BASE_URL", _get_settings().RERANKER_BASE_URL)
+
+
+# ----- API (Wave 5A) -----
+
+def api_root_path() -> str:
+    """Path prefix the app is mounted under behind a proxy (e.g. '/finrag'), or ''."""
+    return _get_settings().API_ROOT_PATH
+
+
+def api_token() -> str | None:
+    """Bearer token required on mutating/expensive routes; None disables auth."""
+    return _get_settings().API_TOKEN

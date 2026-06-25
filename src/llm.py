@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import config
+from . import config, cost, obs
 from .clients import anthropic as anthropic_client
 from .clients import gemini as gemini_client
 from .clients import nvidia as nvidia_client
@@ -62,15 +62,31 @@ def chat(
     model = model or config.llm_model(provider)
     config.validate_provider_model(provider, model)
 
-    if provider == "gemini":
-        return _chat_gemini(messages, model, system, temperature, max_tokens)
-    if provider == "anthropic":
-        return _chat_anthropic(messages, model, system, temperature, max_tokens)
-    if provider == "openai":
-        return _chat_openai(messages, model, system, temperature, max_tokens)
-    if provider == "nvidia":
-        return _chat_nvidia(messages, model, system, temperature, max_tokens)
-    raise AssertionError(f"provider {provider!r} passed validation but has no handler")
+    # One Langfuse generation span per LLM call; nests under whatever span the
+    # request opened. Records token usage and the estimated USD cost (Wave 5B).
+    with obs.span(
+        f"llm.{provider}",
+        as_type="generation",
+        model=model,
+        model_parameters={"temperature": temperature, "max_tokens": max_tokens},
+    ) as sp:
+        if provider == "gemini":
+            resp = _chat_gemini(messages, model, system, temperature, max_tokens)
+        elif provider == "anthropic":
+            resp = _chat_anthropic(messages, model, system, temperature, max_tokens)
+        elif provider == "openai":
+            resp = _chat_openai(messages, model, system, temperature, max_tokens)
+        elif provider == "nvidia":
+            resp = _chat_nvidia(messages, model, system, temperature, max_tokens)
+        else:
+            raise AssertionError(f"provider {provider!r} passed validation but has no handler")
+        sp.update(
+            output=resp.text,
+            usage_details=resp.usage,
+            cost_details=cost.cost_details(model, resp.usage),
+        )
+        obs.record_usage(resp.usage)
+        return resp
 
 
 # --------------------------------------------------------------------------- #

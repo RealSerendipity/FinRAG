@@ -45,22 +45,27 @@ def run_tool(name: str, args: dict, *, registry: dict[str, Tool] | None = None) 
     arithmetic should come back as an Observation the model can recover from,
     same as a successful result.
     """
+    from src import obs
+
     registry = registry or REGISTRY
     tool = registry.get(name)
     if tool is None:
         return f"Error: unknown tool {name!r}. Available: {', '.join(registry)}"
     if not isinstance(args, dict):
         return f"Error: Action Input for {name!r} must be a JSON object, got {type(args).__name__}"
-    try:
-        return tool.run(args)
-    except TypeError as exc:
-        # Wrong / missing argument names — surface the expected parameters.
-        return (
-            f"Error calling {name!r}: {exc}. "
-            f"Expected arguments: {', '.join(tool.parameters) or '(none)'}"
-        )
-    except Exception as exc:  # noqa: BLE001 — observations must capture every failure
-        return f"Error calling {name!r}: {type(exc).__name__}: {exc}"
+    with obs.span(f"tool.{name}", as_type="tool", input=args) as sp:
+        try:
+            result = tool.run(args)
+        except TypeError as exc:
+            # Wrong / missing argument names — surface the expected parameters.
+            result = (
+                f"Error calling {name!r}: {exc}. "
+                f"Expected arguments: {', '.join(tool.parameters) or '(none)'}"
+            )
+        except Exception as exc:  # noqa: BLE001 — observations must capture every failure
+            result = f"Error calling {name!r}: {type(exc).__name__}: {exc}"
+        sp.update(output=result)
+        return result
 
 
 def render_tools(tools: dict[str, Tool] | None = None) -> str:

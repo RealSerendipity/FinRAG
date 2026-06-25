@@ -1,0 +1,20 @@
+# Keep the build context (and image) small and secret-free.
+.git
+.venv
+.uv-cache
+.ruff_cache
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+.env
+.env.*
+runs
+data
+eval
+experiments
+tests
+.idea
+.DS_Store
+**/.DS_Store
+README.zh-CN.md

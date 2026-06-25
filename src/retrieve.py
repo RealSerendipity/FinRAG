@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src import config, db
+from src import config, db, obs
 from src.embed import embed
 
 _PERIOD_PATTERN = re.compile(r"^(?:FY\d{4}|\d{4}|\d{4}-\d{2}-\d{2})$")
@@ -286,32 +286,43 @@ def retrieve(
     do_rerank = config.rerank_enabled() if rerank is None else rerank
     pool = (candidates or config.rerank_candidates()) if do_rerank else input_data.top_k
 
-    # Multi-query: expand to paraphrases, retrieve each (no further rewrite), fuse.
-    if rewrite == "multi_query":
-        from src.query_rewrite import multi_query as _gen_multi
+    with obs.span(
+        "retrieve",
+        as_type="retriever",
+        input=input_data.query,
+        metadata={
+            "mode": mode, "rewrite": rewrite, "rerank": do_rerank,
+            "ticker": input_data.ticker, "period": input_data.period, "top_k": input_data.top_k,
+        },
+    ) as sp:
+        # Multi-query: expand to paraphrases, retrieve each (no further rewrite), fuse.
+        if rewrite == "multi_query":
+            from src.query_rewrite import multi_query as _gen_multi
 
-        variants = _gen_multi(input_data.query, n=_MULTI_QUERY_N)
-        lists = [
-            retrieve(v, ticker=ticker, period=period, top_k=pool, mode=mode,
-                     rerank=False, rewrite="none")
-            for v in variants
-        ]
-        results = _rrf_fuse(lists)
-    else:
-        # HyDE swaps only the text that gets embedded; FTS keeps the real query.
-        embed_text = input_data.query
-        if rewrite == "hyde":
-            from src.query_rewrite import hyde as _gen_hyde
+            variants = _gen_multi(input_data.query, n=_MULTI_QUERY_N)
+            lists = [
+                retrieve(v, ticker=ticker, period=period, top_k=pool, mode=mode,
+                         rerank=False, rewrite="none")
+                for v in variants
+            ]
+            results = _rrf_fuse(lists)
+        else:
+            # HyDE swaps only the text that gets embedded; FTS keeps the real query.
+            embed_text = input_data.query
+            if rewrite == "hyde":
+                from src.query_rewrite import hyde as _gen_hyde
 
-            embed_text = _gen_hyde(input_data.query)
-        conds, fparams = _filter_conditions(input_data)
-        results = _SEARCH[mode](embed_text, input_data.query, conds, fparams, pool)
+                embed_text = _gen_hyde(input_data.query)
+            conds, fparams = _filter_conditions(input_data)
+            results = _SEARCH[mode](embed_text, input_data.query, conds, fparams, pool)
 
-    if do_rerank and results:
-        # Imported lazily — reranking is an optional service path. Always rerank
-        # against the ORIGINAL query, never a HyDE/paraphrase.
-        from src.rerank import rerank as rerank_passages
+        if do_rerank and results:
+            # Imported lazily — reranking is an optional service path. Always rerank
+            # against the ORIGINAL query, never a HyDE/paraphrase.
+            from src.rerank import rerank as rerank_passages
 
-        results = rerank_passages(input_data.query, results, top_k=input_data.top_k)
+            results = rerank_passages(input_data.query, results, top_k=input_data.top_k)
 
-    return results[: input_data.top_k]
+        results = results[: input_data.top_k]
+        sp.update(output={"chunk_ids": [c["id"] for c in results], "count": len(results)})
+        return results
