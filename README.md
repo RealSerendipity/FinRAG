@@ -17,22 +17,45 @@
 > ### 🔗 Try it live → **[www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/)**
 > Ask a question over Apple's 10-K and get a **cited, traceable answer** in the browser — no setup.
 
-Retrieval + agent system over SEC EDGAR filings (10-K / 10-Q / 8-K / 20-F / DEF 14A). A
-hands-on LLM application engineering project for financial research workflows,
-structured answers, citations, evaluation, and deployable AI product surfaces.
-
 ## Overview
 
-FinRAG is a portfolio-grade financial RAG project for answering investment
-research questions over company filings with traceable citations. The project
-is designed to grow from a simple cloud-API-backed RAG baseline into an
-evaluated, observable, agentic system with retrieval experiments, financial
-tools, public demo surfaces, and MCP integration.
+**FinRAG is a production-shaped retrieval-augmented generation (RAG) + agent system
+over SEC EDGAR filings** — 10-K, 10-Q, 8-K, 20-F, and DEF 14A — that answers
+investment-research questions about public companies with **traceable, cited
+answers**. It's a hands-on LLM application engineering project that grows from a
+simple cloud-API RAG baseline into an evaluated, observable, agentic product:
+retrieval experiments, financial tools, a public demo, and Model Context Protocol
+(MCP) integration.
 
-The target user is a developer, analyst, or interviewer who wants to inspect how
-the system ingests filings, retrieves relevant evidence, validates structured
-answers, measures quality, and exposes the workflow through CLI, API, UI, and
-agent tools.
+What makes it stand out:
+
+- **Eval-driven, not vibes** — every retrieval / prompt / ranker change is justified
+  by a reproducible evaluation harness (recall@k · MRR · nDCG · faithfulness ·
+  answer-relevancy via an LLM judge), with metric deltas committed to git.
+- **Hybrid retrieval + reranking** — pgvector dense search fused with Postgres
+  tsvector BM25 (RRF) and NVIDIA NeMo reranking; recall@10 **0.72 → 0.885** across the
+  Wave 3 ablations.
+- **Cited, structured answers** — pydantic-validated answers where every claim points
+  to a real filing chunk; hallucinated citations are rejected, not rendered.
+- **Hand-written ReAct agent + 5 tools** — a from-scratch Thought → Action →
+  Observation loop (no framework) over filing retrieval, SEC XBRL metric lookup,
+  cross-company comparison, web search, and a calculator, with a LangGraph A/B.
+- **MCP server (stdio + remote HTTP)** — exposes finrag's tools over the Model Context
+  Protocol; run it locally over stdio or as a bearer-authenticated, proxy-friendly
+  network service any remote MCP client can reach.
+- **Security guardrails + prompt-injection red team** — input / context / output
+  screens (direct & indirect injection, jailbreak, system-prompt extraction, PII,
+  cross-language attacks) measured by a reproducible attack-success-rate harness:
+  **ASR 0.29 → 0.07**.
+- **Observability & cost** — fail-open Langfuse tracing with per-request token usage
+  and a `$/query` estimate on every answer.
+- **Public demo on a free-tier cloud stack** — FastAPI (SSE) + Streamlit over a
+  cloud-only stack (NVIDIA NIM, Neon Postgres + pgvector), no local model servers,
+  deployable behind your own reverse proxy / TLS.
+
+The target user is a developer, analyst, who wants to inspect how the
+system ingests filings, retrieves relevant evidence, validates structured answers,
+measures quality, and exposes the workflow through CLI, API, UI, agent tools, and MCP.
 
 ## Eval-driven results — Wave 2 → Wave 3
 
@@ -87,7 +110,7 @@ per-step ablations: [`eval/reports/wave_3{a..f}.md`](eval/reports/) (also in the
 | 4    | Hand-written ReAct agent + 5 tools, then LangGraph rewrite                                                              | ✅ shipped | task success **0.94** (17/18) · tool-call accuracy 1.00 · avg 3.0 steps — [`eval/reports/wave_4.md`](eval/reports/wave_4.md), A/B in [`wave_4_langgraph_compare.md`](eval/reports/wave_4_langgraph_compare.md) |
 | 5A   | Public demo (FastAPI + Streamlit)                                                                                      | ✅ shipped | 4 routes live over HTTP; SSE answers + citation UI; p50 ≈ 12.6s — [`eval/reports/wave_5a.md`](eval/reports/wave_5a.md) |
 | 5B   | Observability, cost, caching                                                                                           | ✅ shipped | Langfuse spans (fail-open) · per-request tokens + `$/query` ($0 on NVIDIA free tier) — [`eval/reports/wave_5b.md`](eval/reports/wave_5b.md) |
-| 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ⏳         | attack-success-rate ↓                                        |
+| 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ✅ shipped | attack-success-rate **0.29 → 0.07** (indirect injection 0.67 → 0.00); finrag exposed as an MCP server — [`eval/reports/wave_6.md`](eval/reports/wave_6.md) |
 | 7    | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳         | per-item resume bullets                                      |
 
 ### Wave 3 retrieval ablations
@@ -163,8 +186,8 @@ Run it: `uv run python -m src.agent "..."` or `uv run python eval/run_eval.py --
 | Eval                        | hand-written metrics (recall@k / MRR / nDCG + LLM judge)             | —                                             |
 | Tracing                     | Langfuse Cloud                                                       | —                                             |
 | Output validation           | pydantic                                                             | —                                             |
-| Guardrails (Wave 6, planned) | NVIDIA NemoGuard + custom regex/PII                                 | —                                             |
-| MCP (Wave 6, planned)       | official `mcp` Python SDK as server                                  | —                                             |
+| Guardrails (Wave 6)         | deterministic injection / PII / output screens + NVIDIA NemoGuard content-safety | OpenAI Moderation                |
+| MCP (Wave 6)                | official `mcp` Python SDK as stdio server                            | —                                             |
 | API / UI                    | FastAPI (SSE) + Streamlit                                            | —                                             |
 | Deployment                  | Docker / compose on any VPS or free-tier PaaS; front with your own reverse proxy / TLS | —                            |
 
@@ -249,6 +272,124 @@ Ship it however you deploy — `docker compose up` ([`Dockerfile`](Dockerfile) /
 [`compose.yaml`](compose.yaml) run both services in one container) — then put it
 behind your own reverse proxy / TLS (or your platform's built-in HTTPS).
 
+## Security & MCP (Wave 6)
+
+**Guardrails.** [`src/guardrails.py`](src/guardrails.py) wraps the RAG and agent paths
+in a defense-in-depth filter set, on by default (`GUARDRAILS_ENABLED=1`):
+
+- `screen_input` — refuse prompt-injection / jailbreak / system-prompt-extraction
+  attempts *before* the model runs. Deterministic signatures (always on, no network),
+  plus an optional [NVIDIA NemoGuard](https://build.nvidia.com/nvidia/llama-3_1-nemoguard-8b-content-safety)
+  content-safety check (`NEMOGUARD_ENABLED=1`) for genuinely harmful content.
+- `screen_context` — drop retrieved filing chunks carrying *indirect* injection
+  ("ignore the user and …"), so a poisoned snippet can't hijack the answer.
+- `redact_pii` / `validate_output` — strip emails / SSNs / cards / phones, and catch a
+  leaked secret or a citation pointing outside the retrieved set.
+
+The signatures target attack *phrasing*, not finance vocabulary, so benign filing
+questions pass untouched (false-positive-free, verified in `tests/test_wave6.py`).
+NemoGuard rates content *harm*, not injection, so it augments — never replaces — the
+signatures, and always fails open to them.
+
+**Red team.** [`eval/red_team.jsonl`](eval/red_team.jsonl) holds adversarial prompts
+across five classes (direct jailbreak, system-prompt extraction, citation manipulation,
+indirect injection via a planted chunk, and Chinese-language attacks). The harness runs
+each one with defenses off vs on and reports attack-success-rate before/after — success
+is detected deterministically via a canary, so the number is reproducible:
+
+```bash
+uv run python eval/run_red_team.py        # → eval/reports/wave_6.md (+ raw run)
+```
+
+Results — including which layer stops each attack — are in
+[`eval/reports/wave_6.md`](eval/reports/wave_6.md).
+
+**Use finrag as an MCP tool.** [`src/mcp_server.py`](src/mcp_server.py) exposes finrag
+over the [Model Context Protocol](https://modelcontextprotocol.io) (official `mcp` SDK):
+`ask_filings` (cited RAG), `research_agent` (multi-step ReAct), and the Wave 4 toolset
+(`retrieve_filing`, `lookup_metric`, `compare_companies`, `web_search`, `calculator`).
+Two transports, chosen with `FINRAG_MCP_TRANSPORT`:
+
+*Local (stdio)* — for an MCP client running on the same machine, which launches the
+server as a subprocess. On the command line:
+
+```bash
+claude mcp add finrag -- uv run python -m src.mcp_server
+```
+
+or as a config entry (`.mcp.json`, `claude_desktop_config.json`, Cursor, …):
+
+```json
+{
+  "mcpServers": {
+    "finrag": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "src.mcp_server"],
+      "cwd": "/absolute/path/to/finrag"
+    }
+  }
+}
+```
+
+*Remote (Streamable HTTP)* — to expose finrag as a **network service** any remote MCP
+client can reach. It runs stateless (proxy/tunnel-friendly) and requires
+`Authorization: Bearer <MCP_TOKEN>`. Run it bound to localhost and front it with your
+reverse proxy / tunnel (TLS + the same `MCP_TOKEN`), like the web demo:
+
+```bash
+MCP_TOKEN=your-secret FINRAG_MCP_TRANSPORT=http uv run python -m src.mcp_server
+# → serves Streamable HTTP at http://127.0.0.1:8200/mcp
+```
+
+Then point any HTTP-capable MCP client at the public `/mcp` URL with the bearer header.
+On the command line:
+
+```bash
+claude mcp add --transport http finrag https://your-domain/mcp \
+  --header "Authorization: Bearer your-secret"
+```
+
+or as a config entry (`.mcp.json`, Cursor, VS Code, …):
+
+```json
+{
+  "mcpServers": {
+    "finrag": {
+      "type": "http",
+      "url": "https://your-domain/mcp",
+      "headers": { "Authorization": "Bearer your-secret" }
+    }
+  }
+}
+```
+
+Asking "What was AAPL's revenue in FY2024?" calls finrag's `ask_filings`
+and answers with citations to the SEC source. The same input guardrails apply.
+
+### Verify it works
+
+```bash
+# 1) Red team — produces ASR before/after into eval/reports/wave_6.md (+ raw run).
+#    Blank LANGFUSE_* for batch runs (tracing isn't needed and can stall the first call).
+LANGFUSE_PUBLIC_KEY= LANGFUSE_SECRET_KEY= uv run python -u eval/run_red_team.py
+#    → SUMMARY {"asr_before": ~0.29, "asr_after": ~0.07}
+
+# 2) MCP server — verify tools/list with the official inspector (needs npx).
+npx @modelcontextprotocol/inspector --cli uv run python -m src.mcp_server --method tools/list
+#    → JSON listing 7 tools (ask_filings, research_agent + the 5 Wave 4 tools).
+#    Drop --cli/--method for the browser UI to call them interactively.
+
+# 3) Add the server to any MCP client (config above), ask an AAPL question
+#    → answered via finrag's ask_filings, with citations to the SEC filing.
+
+# 4) Guardrails — zero false positives on benign queries + attacks blocked (offline).
+uv run python -m pytest tests/test_wave6.py -q     # guardrails + MCP tests pass
+```
+
+Guardrails are on by default, so `finrag ask`, `/agent`, and the MCP tools are already
+protected in real use: an injection prompt gets a fixed refusal before any model call
+(`GUARDRAILS_ENABLED=0` disables them to measure the undefended baseline).
+
 ## Chunking strategies
 
 Chunking is configurable at ingest time — pick one per run with `--chunk-strategy`
@@ -303,8 +444,8 @@ src/
   ui.py              # Streamlit single-page Q&A over /ask (Wave 5A)
   obs.py             # fail-open Langfuse tracing + per-request token meter (Wave 5B)
   cost.py            # token → USD estimation (Wave 5B)
-  guardrails.py      # input/output filters                         (Wave 6, planned)
-  mcp_server.py      # expose tools as an MCP server                 (Wave 6, planned)
+  guardrails.py      # injection / PII / output screens + NemoGuard   (Wave 6)
+  mcp_server.py      # finrag tools as an MCP server — stdio + remote HTTP (Wave 6)
   clients/           # thin HTTP clients per provider
     _http.py
     anthropic.py
@@ -323,13 +464,13 @@ src/
     xbrl.py          #   lookup_metric + compare_companies via SEC XBRL
     web_search.py    #   Tavily web search (optional; needs TAVILY_API_KEY)
 prompts/             # versioned prompt files (answer_v*, react_v1)
-sql/                 # schema migrations
+sql/                 # schema migrations (001_init.sql)
 data/                # raw / processed / fixtures
-eval/                # questions, agent suite, metrics, reports
+eval/                # questions, agent suite, red-team set + run_red_team, metrics, reports
 experiments/         # ablation scripts
+docs/                # README assets (demo screenshots, badges)
 runs/                # agent run traces, one JSONL per run (gitignored)
-edge/                # Cloudflare Worker source                     (Wave 7, planned)
-tests/               # pytest suites
+tests/               # pytest suites (incl. test_wave6: guardrails + MCP)
 Dockerfile           # one image, both services (API + Streamlit UI) (Wave 5A)
 compose.yaml         # `docker compose up` → UI on :8501; API stays internal
 deploy/entrypoint.sh # runs API + UI together inside the container

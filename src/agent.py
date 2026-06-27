@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src import obs
+from src import config, guardrails, obs
 from src.llm import chat
 from src.tools import REGISTRY, Tool, render_tools, run_tool
 
@@ -184,6 +184,18 @@ class Agent:
         question = str(question).strip()
         if not question:
             raise ValueError("question must not be empty")
+
+        # Wave 6 input guardrail: refuse injection/jailbreak/extraction before the
+        # loop runs, so a hostile prompt never reaches the tools or the model.
+        if config.guardrails_enabled():
+            verdict = guardrails.screen_input(question)
+            if verdict.blocked:
+                self._memory.append((question, guardrails.REFUSAL_TEXT))
+                return AgentResult(
+                    question=question,
+                    answer=guardrails.REFUSAL_TEXT,
+                    stopped="blocked",
+                )
 
         run_id = uuid.uuid4().hex[:12]
         self.runs_dir.mkdir(parents=True, exist_ok=True)

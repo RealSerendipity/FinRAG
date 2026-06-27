@@ -61,6 +61,21 @@ class Settings(BaseSettings):
     # unset disables auth (local dev, tests). /health stays open either way.
     API_ROOT_PATH: str = ""
     API_TOKEN: str | None = None
+    # MCP_TOKEN: bearer token required by the MCP server's HTTP (streamable-http)
+    # transport when exposed as a network service. Unset = no auth (stdio / local only).
+    MCP_TOKEN: str | None = None
+    # ----- Guardrails (Wave 6) -----
+    # GUARDRAILS_ENABLED: run the deterministic input/context/output screens in the
+    #   ask/agent path. On by default (a security wave is secure by default); the
+    #   screens target injection signatures, not finance content, so benign queries
+    #   pass untouched. Set 0 to measure the undefended baseline.
+    # NEMOGUARD_ENABLED: additionally consult the NVIDIA NemoGuard content-safety
+    #   model on input. Off by default — it costs one extra NIM call per request, so
+    #   the inline pipeline stays heuristics-only; the red-team harness opts in.
+    GUARDRAILS_ENABLED: bool = True
+    NEMOGUARD_ENABLED: bool = False
+    NEMOGUARD_CONTENT_SAFETY_MODEL: str = ""
+    NEMOGUARD_JAILBREAK_MODEL: str = ""
 
     @field_validator(
         "GEMINI_MODELS",
@@ -100,6 +115,7 @@ class Settings(BaseSettings):
         "OPENAI_API_KEY",
         "NVIDIA_API_KEY",
         "API_TOKEN",
+        "MCP_TOKEN",
         mode="before",
     )
     @classmethod
@@ -362,3 +378,26 @@ def api_root_path() -> str:
 def api_token() -> str | None:
     """Bearer token required on mutating/expensive routes; None disables auth."""
     return _get_settings().API_TOKEN
+
+
+def mcp_token() -> str | None:
+    """Bearer token required by the MCP HTTP transport; None disables auth."""
+    return _get_settings().MCP_TOKEN
+
+
+# ----- Guardrails (Wave 6) -----
+
+def guardrails_enabled() -> bool:
+    """Whether the ask/agent path runs the deterministic input/context/output screens."""
+    return _get_settings().GUARDRAILS_ENABLED
+
+
+def nemoguard_enabled() -> bool:
+    """Whether input screening also consults the NVIDIA NemoGuard content-safety model."""
+    return _get_settings().NEMOGUARD_ENABLED
+
+
+def nemoguard_content_safety_model() -> str:
+    return _required_env_value(
+        "NEMOGUARD_CONTENT_SAFETY_MODEL", _get_settings().NEMOGUARD_CONTENT_SAFETY_MODEL
+    )

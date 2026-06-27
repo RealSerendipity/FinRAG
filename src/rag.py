@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src import config, guardrails
 from src.financial.schemas import Answer
 from src.llm import chat
 from src.retrieve import retrieve
@@ -136,6 +137,14 @@ def ask(
     Raises ValueError if the LLM returns citations pointing to non-existent chunk IDs.
     """
     input_data = RagAskInput(question=question, ticker=ticker, period=period, top_k=top_k)
+
+    # Wave 6 input guardrail: refuse injection/jailbreak/extraction attempts before
+    # any retrieval or generation. Benign filing questions never match the signatures.
+    if config.guardrails_enabled():
+        verdict = guardrails.screen_input(input_data.question)
+        if verdict.blocked:
+            return Answer(text=guardrails.REFUSAL_TEXT, citations=[])
+
     chunks = retrieve(
         input_data.question,
         ticker=input_data.ticker,
@@ -144,6 +153,15 @@ def ask(
     )
     if not chunks:
         raise ValueError("No chunks found for this query. Run ingest first.")
+
+    # Wave 6 indirect-injection guardrail: drop retrieved chunks that carry planted
+    # instructions ("ignore the user and …") so a poisoned filing snippet cannot
+    # hijack the answer. If every chunk is filtered out, refuse rather than answer
+    # from nothing.
+    if config.guardrails_enabled():
+        chunks, _flags = guardrails.screen_context(chunks)
+        if not chunks:
+            return Answer(text=guardrails.REFUSAL_TEXT, citations=[])
 
     # Format context for the prompt. parent_doc chunks store the larger parent
     # block in metadata.parent_text — feed that to the LLM (retrieve small/precise,
