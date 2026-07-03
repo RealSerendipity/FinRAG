@@ -8,20 +8,28 @@ Public surface
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src import config, guardrails
+from src import config, guardrails, obs
 from src.financial.schemas import Answer
 from src.llm import chat
 from src.retrieve import retrieve
 
+logger = logging.getLogger(__name__)
+
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "answer_v1.1.txt"
 _PROMPT_TEMPLATE = _PROMPT_PATH.read_text()
 _PERIOD_PATTERN = re.compile(r"^(?:FY\d{4}|\d{4}|\d{4}-\d{2}-\d{2})$")
+
+# Distinctive fragments of the answer prompt. If one shows up in a generated
+# answer, the model is echoing its instructions (prompt extraction) — the output
+# guardrail withholds the answer.
+_PROMPT_SECRETS = ("Base every claim strictly on the context",)
 
 
 class RagAskInput(BaseModel):
@@ -156,12 +164,20 @@ def ask(
 
     # Wave 6 indirect-injection guardrail: drop retrieved chunks that carry planted
     # instructions ("ignore the user and …") so a poisoned filing snippet cannot
-    # hijack the answer. If every chunk is filtered out, refuse rather than answer
-    # from nothing.
+    # hijack the answer. Dropped chunks are logged — a silent drop would look like
+    # a retrieval-quality regression and hide an actual poisoning attempt. If every
+    # chunk is filtered out, refuse rather than answer from nothing.
     if config.guardrails_enabled():
-        chunks, _flags = guardrails.screen_context(chunks)
+        chunks, flags = guardrails.screen_context(chunks)
+        if flags:
+            logger.warning(
+                "screen_context dropped %d chunk(s): %s", len(flags), "; ".join(flags)
+            )
+            # Surface the drop in the request trace too, not just the process log.
+            with obs.span("guardrails.screen_context", metadata={"flags": flags}) as sp:
+                sp.update(output={"dropped": len(flags), "kept": len(chunks)})
         if not chunks:
-            return Answer(text=guardrails.REFUSAL_TEXT, citations=[])
+            return Answer(text=guardrails.REFUSAL_TEXT_CONTEXT, citations=[])
 
     # Format context for the prompt. parent_doc chunks store the larger parent
     # block in metadata.parent_text — feed that to the LLM (retrieve small/precise,
@@ -191,6 +207,8 @@ def ask(
 
     # Hallucination contract: every cited chunk_id must exist in retrieved chunks.
     # Skip when LLM reported insufficient context (empty citations is valid then).
+    # Enforced regardless of GUARDRAILS_ENABLED — it is a data-integrity check,
+    # not an attack screen.
     if answer.is_sufficient:
         valid_ids = {c["id"] for c in chunks}
         bad = [cit.chunk_id for cit in answer.citations if cit.chunk_id not in valid_ids]
@@ -199,5 +217,17 @@ def ask(
                 f"LLM cited chunk_id(s) {bad} that were not in the retrieved context. "
                 "Likely hallucination — answer rejected."
             )
+
+    # Wave 6 output guardrail (last line of defense): withhold an answer that
+    # echoes the prompt/configuration, then strip PII from what is returned.
+    # Citation quotes are left untouched — they are verbatim filing text.
+    if config.guardrails_enabled():
+        verdict = guardrails.validate_output(answer.text, secrets=_PROMPT_SECRETS)
+        if verdict.blocked:
+            logger.warning("validate_output withheld an answer: %s", verdict.detail)
+            return Answer(text=guardrails.REFUSAL_TEXT_OUTPUT, citations=[])
+        redacted, n_pii = guardrails.redact_pii(answer.text)
+        if n_pii:
+            answer = Answer(text=redacted, citations=answer.citations)
 
     return answer

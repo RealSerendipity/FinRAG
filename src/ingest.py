@@ -274,9 +274,15 @@ def ingest(
         )
 
     # Single atomic transaction: company upsert → filing_type resolve → document upsert → chunks.
-    # The shared connection runs in autocommit, so wrap the multi-statement write in an
+    # The pooled connection runs in autocommit, so wrap the multi-statement write in an
     # explicit transaction() — it commits on success and rolls back on any exception.
     with get_conn() as conn, conn.transaction():
+        # Serialize concurrent ingests of the same filing: without the lock, two
+        # simultaneous requests interleave the DELETE+INSERT chunk replacement.
+        # xact-scoped, so it releases automatically at commit/rollback.
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))", (filing.accession,)
+        )
         # Upsert company — updates CIK/name if ticker already exists.
         row = conn.execute(
             """

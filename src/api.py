@@ -2,10 +2,11 @@
 
 Endpoints
 ---------
-- GET  /health  — liveness + whether Langfuse tracing is active
-- POST /ask      — RAG question, streamed as Server-Sent Events
-- POST /agent    — multi-step ReAct agent, returns the final answer + steps
-- POST /ingest   — fetch & ingest SEC filings into the vector store
+- GET  /health          — liveness + whether Langfuse tracing is active
+- POST /ask             — RAG question, streamed as Server-Sent Events
+- POST /agent           — multi-step ReAct agent, returns the final answer + steps
+- POST /ingest          — accept an ingest job (202 + job_id; work runs in background)
+- GET  /ingest/{job_id} — poll an ingest job's status/results
 
 Each request is wrapped in one Langfuse trace and a token meter (Wave 5B), so the
 response carries per-request latency, token usage, estimated USD cost, and a link
@@ -21,10 +22,12 @@ from __future__ import annotations
 
 import hmac
 import json
+import threading
 import time
+import uuid
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -43,6 +46,11 @@ app = FastAPI(
     version="0.5.0",
     root_path=config.api_root_path(),
 )
+
+# SSE heartbeat interval. The blocking pipeline can run > 100 s (Neon cold start
+# + LLM); Cloudflare cuts idle connections at ~100 s, so the stream must carry
+# comment pings well inside that window while the worker thread runs.
+_SSE_PING_SECONDS = 15
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -82,6 +90,12 @@ class IngestRequest(BaseModel):
     form_type: str = "10-K"
     year: int | None = Field(default=None, ge=1994, le=2030)
     period: str | None = None
+
+    @model_validator(mode="after")
+    def _require_year_or_period(self) -> IngestRequest:
+        if self.year is None and self.period is None:
+            raise ValueError("provide year or period")
+        return self
 
 
 def _period_of(req: AskRequest) -> str | None:
@@ -158,6 +172,26 @@ def _ingest_sync(req: IngestRequest) -> dict:
     return {"results": results}
 
 
+# In-memory ingest job registry. An ingest runs minutes (EDGAR fetch + embedding),
+# far past proxy timeouts (Cloudflare cuts at ~100 s), so POST /ingest accepts the
+# job and returns immediately; clients poll GET /ingest/{job_id}. Job state lives
+# in-process — adequate for the single-instance demo deployment.
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
+
+def _run_ingest_job(job_id: str, req: IngestRequest) -> None:
+    with _jobs_lock:
+        _jobs[job_id]["status"] = "running"
+    try:
+        outcome = _ingest_sync(req)
+        with _jobs_lock:
+            _jobs[job_id].update(status="done", **outcome)
+    except Exception as exc:  # noqa: BLE001 — a failed job must be reportable, not lost
+        with _jobs_lock:
+            _jobs[job_id].update(status="error", error=f"{type(exc).__name__}: {exc}")
+
+
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
@@ -180,7 +214,7 @@ async def ask(req: AskRequest) -> EventSourceResponse:
         yield {"event": "answer", "data": json.dumps(result)}
         yield {"event": "done", "data": "{}"}
 
-    return EventSourceResponse(events())
+    return EventSourceResponse(events(), ping=_SSE_PING_SECONDS)
 
 
 @app.post("/agent", dependencies=[Depends(require_token)])
@@ -188,8 +222,20 @@ async def agent(req: AgentRequest) -> dict:
     return await run_in_threadpool(_agent_sync, req)
 
 
-@app.post("/ingest", dependencies=[Depends(require_token)])
-async def ingest(req: IngestRequest) -> dict:
-    if req.period is None and req.year is None:
-        return {"error": "provide year or period"}
-    return await run_in_threadpool(_ingest_sync, req)
+@app.post("/ingest", status_code=202, dependencies=[Depends(require_token)])
+async def ingest(req: IngestRequest, background: BackgroundTasks) -> dict:
+    """Accept an ingest job and return 202 immediately; poll GET /ingest/{job_id}."""
+    job_id = uuid.uuid4().hex[:12]
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "queued", "tickers": [t.upper() for t in req.tickers]}
+    background.add_task(_run_ingest_job, job_id, req)
+    return {"job_id": job_id, "status": "queued", "poll": f"/ingest/{job_id}"}
+
+
+@app.get("/ingest/{job_id}", dependencies=[Depends(require_token)])
+async def ingest_status(job_id: str) -> dict:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown ingest job")
+    return {"job_id": job_id, **job}

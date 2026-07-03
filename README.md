@@ -256,14 +256,17 @@ curl -N -X POST http://127.0.0.1:8000/ask -H 'Content-Type: application/json' \
   -d '{"question":"What was Apple total net sales in fiscal 2024?","ticker":"AAPL","year":2024}'
 ```
 
-Routes: `GET /health`, `POST /ask` (SSE: status → answer → done), `POST /agent`
-(ReAct, JSON), `POST /ingest`. Every `/ask` and `/agent` response carries latency,
+Routes: `GET /health`, `POST /ask` (SSE: status → answer → done, with heartbeat
+pings so proxies don't cut the stream), `POST /agent` (ReAct, JSON),
+`POST /ingest` (returns **202 + job_id** immediately — ingest runs minutes, past
+proxy timeouts — poll `GET /ingest/{job_id}` for status/results). Every `/ask`
+and `/agent` response carries latency,
 token usage, a `$/query` estimate (Wave 5B), and — with `LANGFUSE_*` set — a
 `trace_url` whose trace nests the retrieve / llm / tool spans (tracing is
 fail-open: it never breaks a request).
 
 **Auth & deploy (domain-agnostic).** Set `API_TOKEN` to gate `/ask /agent /ingest`
-behind `Authorization: Bearer <token>` (`/health` stays open); set `API_ROOT_PATH`
+(and `/ingest/{job_id}`) behind `Authorization: Bearer <token>` (`/health` stays open); set `API_ROOT_PATH`
 (e.g. `/finrag`) to serve under a path prefix behind a reverse proxy. A typical
 public deploy keeps the **backend on localhost** and puts the **Streamlit UI as the
 only public surface** at a subpath — the UI reaches the API server-side via
@@ -281,10 +284,14 @@ in a defense-in-depth filter set, on by default (`GUARDRAILS_ENABLED=1`):
   attempts *before* the model runs. Deterministic signatures (always on, no network),
   plus an optional [NVIDIA NemoGuard](https://build.nvidia.com/nvidia/llama-3_1-nemoguard-8b-content-safety)
   content-safety check (`NEMOGUARD_ENABLED=1`) for genuinely harmful content.
-- `screen_context` — drop retrieved filing chunks carrying *indirect* injection
-  ("ignore the user and …"), so a poisoned snippet can't hijack the answer.
-- `redact_pii` / `validate_output` — strip emails / SSNs / cards / phones, and catch a
-  leaked secret or a citation pointing outside the retrieved set.
+- `screen_context` / `screen_observation` — drop retrieved filing chunks carrying
+  *indirect* injection ("ignore the user and …") before generation, and withhold
+  agent tool observations (retrieved excerpts, web-search snippets) that carry the
+  same signatures — so a poisoned snippet can't hijack the answer or the loop.
+  Dropped chunks are logged and traced, never silently discarded.
+- `validate_output` / `redact_pii` — run on every `ask`/`agent` answer before it is
+  returned: withhold an answer that echoes the prompt/configuration, then strip
+  emails / SSNs / card numbers (Luhn-checked) / phones from the text.
 
 The signatures target attack *phrasing*, not finance vocabulary, so benign filing
 questions pass untouched (false-positive-free, verified in `tests/test_wave6.py`).
@@ -433,7 +440,7 @@ src/
   llm.py             # LLM provider dispatch (Gemini / Anthropic / OpenAI / NVIDIA)
   embed.py           # embedding dispatch (NVIDIA primary, Gemini for Wave 3f)
   rerank.py          # reranker dispatch (NVIDIA NeMo Retriever)
-  db.py              # Postgres connection + schema bootstrap
+  db.py              # Postgres connection pool + schema bootstrap
   ingest.py          # parse → chunk (fixed / sentence-window / section / parent-doc) → embed → upsert
   retrieve.py        # vector / FTS / hybrid (RRF) / rerank retrieval
   query_rewrite.py   # normalize / multi-query / HyDE (Wave 3e)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import requests
 import streamlit as st
@@ -77,6 +78,41 @@ def _post(path: str, payload: dict) -> dict:
         return resp.json()
     except requests.RequestException as exc:
         return {"error": f"request failed: {exc}"}
+
+
+def _get(path: str) -> dict:
+    try:
+        resp = requests.get(f"{API_URL}{path}", headers=_auth_headers(), timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        return {"error": f"request failed: {exc}"}
+
+
+def _run_ingest_job(payload: dict, timeout_s: int = 900) -> dict:
+    """Submit an ingest job (202 + job_id) and poll its status until it finishes.
+
+    The backend runs ingest in the background so the POST survives proxy timeouts;
+    this helper hides the submit/poll cycle from the page and returns the same
+    {"results": [...]} shape the old synchronous endpoint produced.
+    """
+    submitted = _post("/ingest", payload)
+    if "error" in submitted:
+        return submitted
+    job_id = submitted.get("job_id")
+    if not job_id:
+        return {"error": f"unexpected response: {submitted}"}
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        status = _get(f"/ingest/{job_id}")
+        if status.get("status") == "done":
+            return status
+        if status.get("status") == "error":
+            return {"error": status.get("error", "ingest job failed")}
+        if "error" in status:  # transport failure while polling
+            return status
+        time.sleep(5)
+    return {"error": f"ingest job {job_id} is still running after {timeout_s}s — try again later"}
 
 
 def _render_metrics(result: dict) -> None:
@@ -205,8 +241,7 @@ with st.expander("⬇️  Ingest a filing — add a company / year to the store"
             st.warning("Enter a ticker first.")
         else:
             with st.spinner(f"Ingesting {ing_ticker.upper()} {ing_form} {int(ing_year)}…"):
-                res = _post(
-                    "/ingest",
+                res = _run_ingest_job(
                     {"tickers": [ing_ticker.strip().upper()],
                      "form_type": ing_form, "year": int(ing_year)},
                 )

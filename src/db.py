@@ -1,37 +1,46 @@
-"""Database connection and schema bootstrap.
+"""Database connection pool and schema bootstrap.
 
 Public surface
 --------------
 - `get_conn()` — context manager yielding a pooled psycopg connection
-- `bootstrap()` — runs sql/001_init.sql idempotently; safe to call on every startup
+- `query(sql, params)` — read query with retry on transient Neon failures
+- `bootstrap()` — runs sql/*.sql idempotently; safe to call on every startup
 
 A cold Neon (free-tier) connect costs ~5s and Neon drops idle connections
-server-side, so opening a connection per query turns a sub-second query into a
-~30s one and makes an ablation sweep unusable. The workload here is
-single-threaded (CLI + eval), so we keep one process-wide connection alive and
-reuse it. The connection runs in autocommit mode: Neon also enforces an
-idle-in-transaction timeout, and a long CPU/HTTP gap (e.g. embedding hundreds of
-chunks) between two statements of the same implicit transaction would otherwise
-get the connection killed. Callers needing multi-statement atomicity open an
-explicit `with conn.transaction():` block. A genuinely dropped connection is
-detected and re-established on the next call. (A concurrent server path, Wave 5,
-should move to a real pool.)
+server-side, so opening a connection per query is unusable. Wave 5 put a
+concurrent FastAPI surface (thread pool) in front of this module, so the old
+process-wide single connection became both a serialization bottleneck and a
+race (two threads could reconnect/close each other's connection). We now use a
+`psycopg_pool.ConnectionPool`:
+
+- `min_size=1` keeps one warm connection (Neon cold-connect paid once);
+- `check=check_connection` pings at checkout, replacing the old manual ping, so
+  a server-side-dropped connection is discarded instead of hanging a query;
+- every connection is configured in autocommit with a statement timeout (Neon
+  also enforces an idle-in-transaction timeout; long CPU/HTTP gaps between two
+  statements of an implicit transaction would get the connection killed).
+
+Callers needing multi-statement atomicity open an explicit
+`with conn.transaction():` block inside the `get_conn()` body.
 """
 
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 import psycopg
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from . import config
 
 _SQL_DIR = Path(__file__).parent.parent / "sql"
 
-_conn: psycopg.Connection | None = None
-_conn_url: str | None = None
+_pool: ConnectionPool | None = None
+_pool_url: str | None = None
+_pool_lock = threading.Lock()
 
 # Neon free-tier drops idle connections server-side and suspends idle compute.
 # A dropped TCP socket the client hasn't noticed makes the next query block
@@ -45,65 +54,63 @@ _CONNECT_KWARGS = {
     "keepalives_count": 3,
 }
 
-
-def _connect(url: str) -> psycopg.Connection:
-    # NB: don't pass libpq `options=` here — it would override any options already
-    # in the DSN (e.g. a search_path used by tests). Set the statement timeout with
-    # a SET after connecting instead (autocommit makes it take effect immediately).
-    conn = psycopg.connect(url, autocommit=True, **_CONNECT_KWARGS)
-    conn.execute("SET statement_timeout = 45000")
-    return conn
+_POOL_MAX_SIZE = 8  # bounded well under Neon free-tier connection limits
 
 
-def _live_conn() -> psycopg.Connection:
-    """Return a cached connection, reconnecting if absent/closed/broken or dead.
+def _configure(conn: psycopg.Connection) -> None:
+    """Session setup for every pooled connection.
 
-    A cheap `SELECT 1` ping detects a server-side-dropped connection (warm ping
-    is sub-millisecond); on failure we discard and reconnect rather than letting
-    a later real query hang on a stale socket.
+    NB: don't pass libpq `options=` in the DSN kwargs — it would override any
+    options already in the DSN (e.g. a search_path used by tests). Autocommit is
+    set BEFORE the SETs so they take effect immediately instead of opening a
+    transaction. `hnsw.iterative_scan` (pgvector >= 0.8) keeps filtered vector
+    queries from starving under HNSW post-filtering; older pgvector rejects the
+    GUC, which is tolerated (the recall mitigation is then unavailable).
     """
-    global _conn, _conn_url
+    conn.autocommit = True
+    conn.execute("SET statement_timeout = 45000")
+    try:
+        conn.execute("SET hnsw.iterative_scan = 'relaxed_order'")
+    except Exception:
+        pass
+
+
+def _get_pool() -> ConnectionPool:
+    """Return the process-wide pool, (re)creating it when DATABASE_URL changes."""
+    global _pool, _pool_url
     url = config.database_url()
-    if _conn is not None and (_conn.closed or _conn.broken or _conn_url != url):
-        try:
-            _conn.close()
-        except Exception:
-            pass
-        _conn = None
-    if _conn is not None:
-        try:
-            _conn.execute("SELECT 1")
-        except Exception:
+    with _pool_lock:
+        if _pool is not None and _pool_url != url:
             try:
-                _conn.close()
+                _pool.close()
             except Exception:
                 pass
-            _conn = None
-    if _conn is None:
-        _conn = _connect(url)
-        _conn_url = url
-    return _conn
-
-
-def _reset() -> None:
-    """Drop the cached connection so the next call reconnects."""
-    global _conn
-    if _conn is not None:
-        try:
-            _conn.close()
-        except Exception:
-            pass
-        _conn = None
+            _pool = None
+        if _pool is None:
+            _pool = ConnectionPool(
+                url,
+                min_size=1,
+                max_size=_POOL_MAX_SIZE,
+                kwargs=_CONNECT_KWARGS,
+                configure=_configure,
+                check=ConnectionPool.check_connection,
+                open=False,
+                name="finrag",
+            )
+            _pool.open()
+            _pool_url = url
+        return _pool
 
 
 @contextmanager
 def get_conn():
-    """Yield the reused autocommit connection (kept open across calls).
+    """Yield a pooled autocommit connection (returned to the pool on exit).
 
     Statements autocommit individually. For multi-statement atomicity, open an
     explicit `with conn.transaction():` block inside the with-body.
     """
-    yield _live_conn()
+    with _get_pool().connection() as conn:
+        yield conn
 
 
 def query(sql: str, params=None, *, retries: int = 3) -> list:
@@ -111,17 +118,18 @@ def query(sql: str, params=None, *, retries: int = 3) -> list:
 
     Neon free-tier intermittently drops the connection mid-query (SSL "bad record
     mac", server-closed, operational errors). A single retrieval shouldn't crash a
-    long eval run over a blip, so we drop the connection and reconnect on such
-    errors with exponential back-off. Not used for writes (those need a transaction).
+    long eval run over a blip, so we retry on a fresh pooled connection with
+    exponential back-off (the pool discards a connection broken by the failure).
+    Not used for writes (those need a transaction).
     """
     delay = 0.5
     last: Exception | None = None
     for attempt in range(retries):
         try:
-            return _live_conn().execute(sql, params).fetchall()
-        except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
+            with get_conn() as conn:
+                return conn.execute(sql, params).fetchall()
+        except (psycopg.OperationalError, psycopg.InterfaceError, PoolTimeout) as exc:
             last = exc
-            _reset()  # force a fresh connection on the next attempt
             if attempt < retries - 1:
                 time.sleep(delay)
                 delay *= 2

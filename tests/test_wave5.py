@@ -115,9 +115,53 @@ def test_agent_endpoint(monkeypatch):
 
 
 def test_ingest_requires_year_or_period():
+    # Missing year/period is a validation error, not a 200 with an error body.
     resp = client.post("/ingest", json={"tickers": ["AAPL"]})
-    assert resp.status_code == 200
-    assert "error" in resp.json()
+    assert resp.status_code == 422
+
+
+def test_ingest_returns_202_with_pollable_job(monkeypatch):
+    # Ingest runs minutes (EDGAR fetch + embedding); a synchronous response dies
+    # at proxy timeouts. The route must accept, return a job id, and expose status.
+    monkeypatch.setattr(api, "run_ingest", lambda ticker, **k: 42)
+    resp = client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024})
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+    status = client.get(f"/ingest/{job_id}")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["status"] == "done"
+    assert body["results"][0] == {
+        "ticker": "AAPL",
+        "chunks": 42,
+        "elapsed_s": body["results"][0]["elapsed_s"],
+    }
+
+
+def test_ingest_job_records_per_ticker_errors(monkeypatch):
+    def _boom(ticker, **k):
+        raise ValueError("no filing found")
+
+    monkeypatch.setattr(api, "run_ingest", _boom)
+    resp = client.post("/ingest", json={"tickers": ["ZZZZ"], "year": 2024})
+    job_id = resp.json()["job_id"]
+    body = client.get(f"/ingest/{job_id}").json()
+    assert body["status"] == "done"
+    assert "ValueError" in body["results"][0]["error"]
+
+
+def test_ingest_unknown_job_is_404():
+    assert client.get("/ingest/nonexistent").status_code == 404
+
+
+def test_ask_sse_ping_is_configured():
+    # Behind Cloudflare (100 s idle timeout) the stream must carry heartbeats
+    # while the blocking pipeline runs; pin the explicit ping interval.
+    import asyncio
+
+    resp = asyncio.run(api.ask(api.AskRequest(question="q")))
+    assert resp.ping_interval == api._SSE_PING_SECONDS
+    assert api._SSE_PING_SECONDS < 100
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +173,7 @@ def test_token_gate(monkeypatch):
     assert client.get("/health").status_code == 200
     # Missing or wrong token is rejected on the protected routes.
     assert client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024}).status_code == 401
+    assert client.get("/ingest/somejob").status_code == 401
     assert client.post(
         "/agent", json={"question": "hi"}, headers={"Authorization": "Bearer wrong"}
     ).status_code == 401
@@ -144,9 +189,11 @@ def test_token_gate(monkeypatch):
     assert "event: answer" in resp.text
 
 
-def test_token_gate_disabled_by_default():
+def test_token_gate_disabled_by_default(monkeypatch):
     # With API_TOKEN unset, protected routes need no Authorization header.
-    assert client.post("/ingest", json={"tickers": ["AAPL"]}).status_code == 200
+    monkeypatch.setattr(api, "run_ingest", lambda ticker, **k: 1)
+    resp = client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024})
+    assert resp.status_code == 202
 
 
 def test_api_root_path_normalization(monkeypatch):

@@ -15,6 +15,7 @@ the Wave 3 ablation scripts A/B a single variable.
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 from typing import Any
 
@@ -22,6 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src import config, db, obs
 from src.embed import embed
+
+logger = logging.getLogger(__name__)
 
 _PERIOD_PATTERN = re.compile(r"^(?:FY\d{4}|\d{4}|\d{4}-\d{2}-\d{2})$")
 
@@ -315,6 +318,18 @@ def retrieve(
                 embed_text = _gen_hyde(input_data.query)
             conds, fparams = _filter_conditions(input_data)
             results = _SEARCH[mode](embed_text, input_data.query, conds, fparams, pool)
+            # HNSW applies WHERE filters AFTER the index scan, so a selective
+            # ticker/period filter can starve the vector result set as the corpus
+            # grows. `hnsw.iterative_scan` (set in db._configure) mitigates it on
+            # pgvector >= 0.8; this warning makes any residual shortfall visible
+            # instead of silently degrading recall.
+            if conds and mode in ("dense", "hybrid") and len(results) < input_data.top_k:
+                logger.warning(
+                    "filtered %s retrieval returned %d/%d chunks (ticker=%s period=%s) — "
+                    "possible HNSW post-filter starvation or sparse corpus",
+                    mode, len(results), input_data.top_k,
+                    input_data.ticker, input_data.period,
+                )
 
         if do_rerank and results:
             # Imported lazily — reranking is an optional service path. Always rerank

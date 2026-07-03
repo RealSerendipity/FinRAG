@@ -228,13 +228,15 @@ curl -N -X POST http://127.0.0.1:8000/ask -H 'Content-Type: application/json' \
   -d '{"question":"What was Apple total net sales in fiscal 2024?","ticker":"AAPL","year":2024}'
 ```
 
-路由：`GET /health`、`POST /ask`（SSE：status → answer → done）、`POST /agent`
-（ReAct，JSON）、`POST /ingest`。每个 `/ask` 和 `/agent` 响应都带延迟、token 用量、
+路由：`GET /health`、`POST /ask`（SSE：status → answer → done，带心跳 ping，
+代理不会掐断长请求）、`POST /agent`（ReAct，JSON）、`POST /ingest`（立即返回
+**202 + job_id**——ingest 要跑数分钟，远超代理超时——用 `GET /ingest/{job_id}`
+轮询状态/结果）。每个 `/ask` 和 `/agent` 响应都带延迟、token 用量、
 `$/query` 估算（Wave 5B），并在设置了 `LANGFUSE_*` 时带一个 `trace_url`——其 trace
 嵌套了 retrieve / llm / tool 各 span（fail-open：tracing 不会拖垮请求）。
 
-**鉴权与部署（域名无关）。** 设 `API_TOKEN` 即可让 `/ask /agent /ingest` 需要
-`Authorization: Bearer <token>`（`/health` 保持开放）；设 `API_ROOT_PATH`（如 `/finrag`）
+**鉴权与部署（域名无关）。** 设 `API_TOKEN` 即可让 `/ask /agent /ingest`
+（含 `/ingest/{job_id}`）需要 `Authorization: Bearer <token>`（`/health` 保持开放）；设 `API_ROOT_PATH`（如 `/finrag`）
 让服务跑在反向代理的某个路径前缀下。典型的公开部署把**后台留在 localhost**，只把
 **Streamlit UI 作为唯一公网入口**挂在某个子路径上 —— UI 在服务端通过
 `FINRAG_API_URL` + `FINRAG_API_TOKEN` 调后台，token 不进浏览器。可用仓库里的
@@ -249,10 +251,11 @@ curl -N -X POST http://127.0.0.1:8000/ask -H 'Content-Type: application/json' \
 - `screen_input` —— 在模型运行**之前**拦截 prompt 注入 / 越狱 / 系统提示提取（确定性正则
   签名，无需联网，含中文变体；可选开启 [NVIDIA NemoGuard](https://build.nvidia.com/nvidia/llama-3_1-nemoguard-8b-content-safety)
   content-safety，`NEMOGUARD_ENABLED=1`，用于真正有害的内容）。
-- `screen_context` —— 丢弃检索到的、夹带**间接注入**（"忽略用户，改为…"）的 filing chunk，
-  让被投毒的片段无法劫持回答。
-- `redact_pii` / `validate_output` —— 脱敏 email / SSN / 卡号 / 电话；拦截泄露的密钥或指向
-  检索集之外的 citation。
+- `screen_context` / `screen_observation` —— 生成前丢弃夹带**间接注入**（"忽略用户，改为…"）
+  的检索 chunk；agent 的工具观察结果（检索摘录、web 搜索片段）命中同类签名时同样扣留——
+  被投毒的片段既劫持不了回答，也劫持不了循环。丢弃会记日志并进 trace，绝不静默。
+- `validate_output` / `redact_pii` —— 在每个 `ask`/`agent` 答案返回**之前**运行：扣留回显
+  提示词/配置的答案，再对文本脱敏 email / SSN / 卡号（Luhn 校验）/ 电话。
 
 签名针对攻击**措辞**而非金融词汇，所以正常的 filing 问题不受影响（零误报，见
 `tests/test_wave6.py`）。NemoGuard 评估的是内容**危害**而非注入，因此它是对签名的**增强**而非
@@ -380,7 +383,7 @@ src/
   llm.py             # LLM provider 分发（Gemini / Anthropic / OpenAI / NVIDIA）
   embed.py           # embedding 分发（NVIDIA 主用，Gemini 用于 Wave 3f）
   rerank.py          # reranker 分发（NVIDIA NeMo Retriever）
-  db.py              # Postgres 连接 + schema 引导
+  db.py              # Postgres 连接池 + schema 引导
   ingest.py          # parse -> chunk（fixed / sentence-window / section / parent-doc）-> embed -> upsert
   retrieve.py        # vector / FTS / hybrid (RRF) / rerank 检索
   query_rewrite.py   # normalize / multi-query / HyDE（Wave 3e）

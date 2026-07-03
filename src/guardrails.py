@@ -87,10 +87,15 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "exfiltration",
+        # Marker elicitation: "reply with exactly X" / "respond with the verbatim
+        # string X". The trailing lookahead exempts quote-FROM-the-document requests
+        # ("repeat the exact phrase used about …", "say exactly what management
+        # said") — quoting filings is the product's core use case, not an attack.
         re.compile(
             r"(?:respond|reply|answer|say|output|print|write|repeat)\b[^.\n]{0,20}?"
             r"(?:\bexactly\b|\bverbatim\b|\bexact\s+(?:phrase|word|string|text)\b"
-            r"|\bthe\s+(?:phrase|word|string|text)\b)",
+            r"|\bthe\s+(?:phrase|word|string|text)\b)"
+            r"(?!\s+(?:of|from|in|used|that|which|what|how|when|where|appearing|found)\b)",
             re.IGNORECASE,
         ),
     ),
@@ -111,7 +116,12 @@ _INJECTION_PATTERNS_ZH: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "role_override",
-        re.compile(r"(?:你现在是|从现在起|扮演|假装(?:你是|成为)|进入开发者模式|越狱)"),
+        # 扮演/从现在起 need directive context: bare 扮演 appears in benign finance
+        # questions ("公司在市场中扮演的角色"), and 从现在起 in time-range questions
+        # ("从现在起到2026年"). Require an imperative subject (请/你) or a persona
+        # object (一个/一位/一名) around them.
+        re.compile(r"(?:你现在是|从现在起[,,]?\s*你|(?:请你?|你(?:必须|需要|来|就|要)?)扮演"
+                   r"|扮演(?:一个|一位|一名)|假装(?:你是|成为)|进入开发者模式|越狱)"),
     ),
 )
 
@@ -147,11 +157,22 @@ class OutputVerdict:
         return not self.allowed
 
 
-# A safe, fixed refusal returned in place of a blocked answer.
+# Safe, fixed refusals returned in place of a blocked answer. Distinct per layer
+# so a caller (or a trace reader) can tell WHERE the defense fired.
 REFUSAL_TEXT = (
     "This request was blocked by finrag's input guardrails: it looks like an attempt "
     "to override the assistant's instructions or extract its configuration. finrag "
     "only answers questions about ingested SEC filings."
+)
+REFUSAL_TEXT_CONTEXT = (
+    "Every passage retrieved for this question was filtered out by finrag's context "
+    "guardrails because it carried planted instructions. finrag cannot answer safely "
+    "from the remaining context."
+)
+REFUSAL_TEXT_OUTPUT = (
+    "The generated answer was withheld by finrag's output guardrails: it contained "
+    "configuration or instruction content that must not be disclosed. Please rephrase "
+    "the question."
 )
 
 
@@ -252,6 +273,25 @@ def screen_input(text: str) -> InputVerdict:
     return InputVerdict(allowed=True)
 
 
+def screen_observation(text: str) -> InputVerdict:
+    """Heuristics-only screen for tool observations fed back into the agent loop.
+
+    Applies the injection signatures to text a tool returned (retrieved filing
+    excerpts, web-search snippets) so indirect injection cannot ride an
+    Observation into the prompt. Deliberately never consults NemoGuard —
+    observations are screened on every step, so this layer stays offline and
+    deterministic.
+    """
+    hits = _heuristic_hits(text or "")
+    if hits:
+        return InputVerdict(
+            allowed=False,
+            categories=tuple(hits),
+            detail=f"observation matched {', '.join(hits)}",
+        )
+    return InputVerdict(allowed=True)
+
+
 def screen_context(chunks: list[dict]) -> tuple[list[dict], list[str]]:
     """Defend against indirect injection planted in retrieved chunks.
 
@@ -285,11 +325,26 @@ _PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+def _luhn_ok(digits: str) -> bool:
+    """Luhn checksum — separates real card numbers from ordinary digit runs."""
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
 def redact_pii(text: str) -> tuple[str, int]:
     """Replace emails / SSNs / card / phone numbers with `[REDACTED_<KIND>]`.
 
     Returns `(redacted_text, count)`. Order matters: SSN and card patterns run
     before the looser phone pattern so a 9-digit SSN is not mis-tagged as a phone.
+    13–16 digit runs are redacted as cards only when they pass the Luhn check —
+    filings are full of unformatted numeric totals that are not card numbers.
     """
     if not text:
         return text, 0
@@ -298,8 +353,10 @@ def redact_pii(text: str) -> tuple[str, int]:
     def _sub(label: str, pattern: re.Pattern[str], s: str) -> str:
         nonlocal count
 
-        def repl(_m: re.Match[str]) -> str:
+        def repl(m: re.Match[str]) -> str:
             nonlocal count
+            if label == "CARD" and not _luhn_ok(re.sub(r"\D", "", m.group(0))):
+                return m.group(0)
             count += 1
             return f"[REDACTED_{label}]"
 
