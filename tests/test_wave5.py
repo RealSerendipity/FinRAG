@@ -147,7 +147,8 @@ def test_ingest_job_records_per_ticker_errors(monkeypatch):
     job_id = resp.json()["job_id"]
     body = client.get(f"/ingest/{job_id}").json()
     assert body["status"] == "done"
-    assert "ValueError" in body["results"][0]["error"]
+    # Domain ValueErrors carry intentional, safe messages (no exception type noise).
+    assert "no filing found" in body["results"][0]["error"]
 
 
 def test_ingest_unknown_job_is_404():
@@ -159,7 +160,11 @@ def test_ask_sse_ping_is_configured():
     # while the blocking pipeline runs; pin the explicit ping interval.
     import asyncio
 
-    resp = asyncio.run(api.ask(api.AskRequest(question="q")))
+    from starlette.requests import Request
+
+    scope = {"type": "http", "method": "POST", "path": "/ask", "headers": [],
+             "query_string": b"", "client": ("127.0.0.1", 1)}
+    resp = asyncio.run(api.ask(Request(scope), api.AskRequest(question="q")))
     assert resp.ping_interval == api._SSE_PING_SECONDS
     assert api._SSE_PING_SECONDS < 100
 

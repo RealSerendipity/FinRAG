@@ -54,10 +54,10 @@ def chat(
     is passed separately (each provider has its own native slot for it).
     """
     provider = (provider or config.llm_provider()).lower()
-    if provider not in config._KNOWN_PROVIDERS:
+    if provider not in config.KNOWN_PROVIDERS:
         raise ValueError(
             f"Unknown LLM_PROVIDER: {provider!r}. "
-            f"Set LLM_PROVIDER to one of: {', '.join(config._KNOWN_PROVIDERS)}"
+            f"Set LLM_PROVIDER to one of: {', '.join(config.KNOWN_PROVIDERS)}"
         )
     model = model or config.llm_model(provider)
     config.validate_provider_model(provider, model)
@@ -85,7 +85,7 @@ def chat(
             usage_details=resp.usage,
             cost_details=cost.cost_details(model, resp.usage),
         )
-        obs.record_usage(resp.usage)
+        obs.record_usage(resp.usage, model=model)
         return resp
 
 

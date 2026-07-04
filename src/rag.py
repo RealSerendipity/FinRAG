@@ -40,7 +40,7 @@ class RagAskInput(BaseModel):
     question: str = Field(min_length=1)
     ticker: str | None = None
     period: str | None = None
-    top_k: int = Field(default=5, ge=1, le=100)
+    top_k: int = Field(default=5, ge=1, le=config.MAX_TOP_K)
 
     @field_validator("question", mode="before")
     @classmethod
@@ -73,6 +73,17 @@ class RagAskInput(BaseModel):
         return value
 
 
+def _norm_ws(text: str) -> str:
+    """Whitespace-normalized, case-folded form used for quote-in-chunk matching."""
+    return re.sub(r"\s+", " ", text or "").strip().casefold()
+
+
+def _quote_verified(quote: str, chunk: dict) -> bool:
+    """True when `quote` occurs (whitespace-normalized) in the chunk text the model saw."""
+    q = _norm_ws(quote)
+    return bool(q) and q in _norm_ws(_context_text(chunk))
+
+
 def _context_text(chunk: dict) -> str:
     """Generation context for a retrieved chunk: parent_text if present, else content.
 
@@ -85,7 +96,12 @@ def _context_text(chunk: dict) -> str:
 
 
 def _iter_json_objects(raw: str):
-    """Yield every balanced top-level {...} substring, ignoring braces inside strings."""
+    """Yield every balanced top-level {...} substring, ignoring braces inside strings.
+
+    String state is only tracked inside an object (depth > 0): a lone quote in
+    surrounding prose would otherwise open a phantom string and swallow the real
+    JSON that follows it.
+    """
     depth = 0
     start = -1
     in_str = False
@@ -100,7 +116,8 @@ def _iter_json_objects(raw: str):
                 in_str = False
             continue
         if ch == '"':
-            in_str = True
+            if depth > 0:
+                in_str = True
         elif ch == "{":
             if depth == 0:
                 start = i
@@ -217,6 +234,22 @@ def ask(
                 f"LLM cited chunk_id(s) {bad} that were not in the retrieved context. "
                 "Likely hallucination — answer rejected."
             )
+        # Citation-quote integrity: the schema promises `quote` is a verbatim
+        # excerpt of the cited chunk, but the model can pair a real chunk_id with
+        # an invented quote. A quote that isn't found (whitespace-normalized) in
+        # the chunk text the model saw is marked unverified — not a hard error,
+        # the answer may still be right, but the UI must not show it as evidence.
+        by_id = {c["id"]: c for c in chunks}
+        checked = []
+        for cit in answer.citations:
+            ok = _quote_verified(cit.quote, by_id[cit.chunk_id])
+            if not ok:
+                logger.warning(
+                    "citation quote for chunk %d not found in the chunk — marked unverified",
+                    cit.chunk_id,
+                )
+            checked.append(cit.model_copy(update={"verified": ok}))
+        answer = Answer(text=answer.text, citations=checked)
 
     # Wave 6 output guardrail (last line of defense): withhold an answer that
     # echoes the prompt/configuration, then strip PII from what is returned.

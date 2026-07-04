@@ -10,6 +10,10 @@ from pydantic import BaseModel
 class Citation(BaseModel):
     chunk_id: int
     quote: str  # verbatim short excerpt from the chunk that supports the answer
+    # Set by rag.ask: True when `quote` was actually found (whitespace-normalized)
+    # in the cited chunk's text; False flags a model-fabricated quote that must
+    # not be presented as evidence.
+    verified: bool = True
 
 
 class Answer(BaseModel):

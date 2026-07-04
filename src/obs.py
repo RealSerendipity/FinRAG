@@ -123,14 +123,27 @@ def request_meter():
         _usage_var.reset(token)
 
 
-def record_usage(usage: dict[str, int]) -> None:
-    """Add one LLM call's usage to the active request meter, if any."""
+def record_usage(usage: dict[str, int], model: str | None = None) -> None:
+    """Add one LLM call's usage to the active request meter, if any.
+
+    When `model` is given the tokens are also bucketed per model, so cost can be
+    priced by the model that actually served each call (a request may mix
+    generator and judge models) instead of a config-level assumption.
+    """
     counter = _usage_var.get()
     if counter is None:
         return
-    counter["input_tokens"] += usage.get("input_tokens", 0) or 0
-    counter["output_tokens"] += usage.get("output_tokens", 0) or 0
+    in_tok = usage.get("input_tokens", 0) or 0
+    out_tok = usage.get("output_tokens", 0) or 0
+    counter["input_tokens"] += in_tok
+    counter["output_tokens"] += out_tok
     counter["calls"] += 1
+    if model:
+        bucket = counter.setdefault("models", {}).setdefault(
+            model, {"input_tokens": 0, "output_tokens": 0}
+        )
+        bucket["input_tokens"] += in_tok
+        bucket["output_tokens"] += out_tok
 
 
 def flush() -> None:

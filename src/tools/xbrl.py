@@ -92,20 +92,18 @@ def _latest_by_year(facts: list[dict]) -> dict[int, dict]:
     return best
 
 
-def metric_value(ticker: str, concept: str, year: int | str | None = None) -> MetricFact:
-    """Return the annual XBRL fact for a ticker/concept, for `year` or the latest.
-
-    Raises KeyError for an unknown concept, LookupError when no annual fact exists
-    (unknown ticker, never-reported tag, or no data for the requested year).
-    """
+def _validated_concept(concept: str) -> str:
     key = str(concept).strip().lower()
     if key not in _CONCEPTS:
         raise KeyError(
             f"unknown concept {concept!r}. Known: {', '.join(sorted(_CONCEPTS))}"
         )
-    tags, unit_pref = _CONCEPTS[key]
-    year_int = int(year) if year not in (None, "") else None
+    return key
 
+
+def _candidate_series(ticker: str, concept_key: str):
+    """Yield (tag, unit, year->fact) for each candidate tag that has annual data."""
+    tags, unit_pref = _CONCEPTS[concept_key]
     for tag in tags:
         try:
             payload = fin_edgar.company_concept(ticker, tag)
@@ -118,12 +116,36 @@ def metric_value(ticker: str, concept: str, year: int | str | None = None) -> Me
         if not unit:
             continue
         by_year = _latest_by_year(_annual_facts(units[unit]))
-        if not by_year:
-            continue
+        if by_year:
+            yield tag, unit, by_year
+
+
+def _available_years(ticker: str, concept_key: str) -> set[int]:
+    """Fiscal years with an annual fact, from the first candidate tag with data.
+
+    Used by compare_companies to pick the latest COMMON year. Companies
+    overwhelmingly report a concept under one tag, so the first series is the
+    same one metric_value would resolve for the latest-year lookup.
+    """
+    for _tag, _unit, by_year in _candidate_series(ticker, concept_key):
+        return set(by_year)
+    return set()
+
+
+def metric_value(ticker: str, concept: str, year: int | str | None = None) -> MetricFact:
+    """Return the annual XBRL fact for a ticker/concept, for `year` or the latest.
+
+    Raises KeyError for an unknown concept, LookupError when no annual fact exists
+    (unknown ticker, never-reported tag, or no data for the requested year).
+    """
+    key = _validated_concept(concept)
+    year_int = int(year) if year not in (None, "") else None
+
+    for tag, unit, by_year in _candidate_series(ticker, key):
         chosen_year = year_int if year_int is not None else max(by_year)
         fact = by_year.get(chosen_year)
         if fact is None:
-            continue
+            continue  # this tag lacks the requested year — try the next candidate
         return MetricFact(
             ticker=ticker.upper(),
             concept=key,
@@ -135,6 +157,7 @@ def metric_value(ticker: str, concept: str, year: int | str | None = None) -> Me
             form=str(fact.get("form", "")),
         )
 
+    tags, _ = _CONCEPTS[key]
     scope = f" for FY{year_int}" if year_int is not None else ""
     raise LookupError(
         f"No annual XBRL value for {ticker.upper()} {key}{scope} "
@@ -177,14 +200,38 @@ def _split_tickers(tickers: list[str] | str) -> list[str]:
 def compare_companies(
     tickers: list[str] | str, concept: str, year: int | str | None = None
 ) -> str:
-    """Look up the same metric for several companies and return them side by side."""
+    """Look up the same metric for several companies and return them side by side.
+
+    When `year` is omitted the latest COMMON fiscal year across the companies is
+    used — each company's own latest year can differ (offset fiscal calendars,
+    filing lag) and cross-year numbers are not comparable. If no common year
+    exists, each company's latest figure is shown with an explicit warning.
+    """
     syms = _split_tickers(tickers)
     if len(syms) < 2:
         return "Error: compare_companies needs at least two tickers"
-    lines = []
+
+    chosen_year = year
+    warning = ""
+    if year in (None, ""):
+        try:
+            year_sets = [_available_years(sym, _validated_concept(concept)) for sym in syms]
+        except KeyError as exc:
+            return f"Error: {exc}"
+        common = set.intersection(*year_sets) if year_sets else set()
+        if common:
+            chosen_year = max(common)
+        else:
+            warning = (
+                "Warning: no common fiscal year across "
+                f"{', '.join(s.upper() for s in syms)} — showing each company's "
+                "latest annual figure; the years differ and are NOT directly comparable."
+            )
+
+    lines = [warning] if warning else []
     for sym in syms:
         try:
-            fact = metric_value(sym, concept, year)
+            fact = metric_value(sym, concept, chosen_year)
             lines.append(
                 f"{fact.ticker} FY{fact.fiscal_year} {fact.concept}: "
                 f"{_fmt_value(fact.value, fact.unit)} (raw {fact.value:.0f} {fact.unit})"
@@ -213,7 +260,7 @@ COMPARE_TOOL = Tool(
     parameters={
         "tickers": "list or comma string of tickers, e.g. ['NVDA','AMD']",
         "concept": "metric name from the supported concept list",
-        "year": "fiscal year, e.g. 2024 (omit for the latest)",
+        "year": "fiscal year, e.g. 2024 (omit for the latest common year)",
     },
     func=compare_companies,
 )

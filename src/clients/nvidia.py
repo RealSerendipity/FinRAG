@@ -68,8 +68,6 @@ def rerank(
     for attempt in range(4):
         try:
             resp = httpx.post(url, headers=headers, json=payload, timeout=60)
-            if resp.status_code == 429 or resp.status_code >= 500:
-                resp.raise_for_status()
             resp.raise_for_status()
             return [(r["index"], r["logit"]) for r in resp.json()["rankings"]]
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:

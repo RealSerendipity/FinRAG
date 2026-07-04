@@ -30,7 +30,8 @@
   （recall@k · MRR · nDCG · faithfulness · answer-relevancy,用 LLM judge）,指标 delta 提交进 git。
 - **混合检索 + 重排** —— pgvector 稠密检索与 Postgres tsvector BM25 用 RRF 融合,再叠加 NVIDIA NeMo
   重排;Wave 3 消融中 recall@10 **0.72 → 0.885**。
-- **带引用的结构化答案** —— pydantic 校验的答案,每条论断都指向真实 filing chunk;幻觉 citation 直接被拒。
+- **带引用的结构化答案** —— pydantic 校验的答案,每条论断都指向真实 filing chunk;幻觉 citation 直接被拒,
+  且每条引用的 quote 都会与被引 chunk 的原文核对(编造的 quote 返回 `verified: false`,绝不当作证据展示)。
 - **手写 ReAct agent + 5 个工具** —— 从零实现的 Thought → Action → Observation 循环（无框架）,
   覆盖 filing 检索、SEC XBRL 指标查询、跨公司对比、web search、计算器,并有 LangGraph A/B。
 - **MCP server（stdio + 远程 HTTP）** —— 用 Model Context Protocol 暴露 finrag 工具;既能本地 stdio 运行,
@@ -122,7 +123,7 @@ Observation，不依赖任何 agent 框架 —— 调度五个工具:
 | ---- | ---- | --- |
 | `retrieve_filing` | Wave 3 的 hybrid + rerank 检索器 | 已入库 filing 里的叙事 / 定性事实 |
 | `lookup_metric` | SEC XBRL `companyconcept` API | 单个审计过的年度数值（不走 RAG） |
-| `compare_companies` | SEC XBRL | 多家公司同一指标并排对比 |
+| `compare_companies` | SEC XBRL | 多家公司同一指标并排对比（省略 `year` 时取最近的**共同**财年） |
 | `calculator` | AST 求值（不用 `eval`） | 比率、百分比变化、求和 |
 | `web_search` | Tavily（可选） | 语料库之外的事实 |
 
@@ -163,7 +164,7 @@ JSONL trace 写到 `runs/<id>.jsonl`;agent 还带最简 session memory(最近 N 
 | Tracing | Langfuse Cloud | — |
 | Output validation | pydantic | — |
 | Guardrails（Wave 6） | 确定性 注入 / PII / 输出 过滤 + NVIDIA NemoGuard content-safety | OpenAI Moderation |
-| MCP（Wave 6） | official `mcp` Python SDK 作为 stdio server | — |
+| MCP（Wave 6） | official `mcp` Python SDK —— stdio + streamable HTTP server | — |
 | API / UI | FastAPI（SSE）+ Streamlit | — |
 | Deployment | Docker / compose（任意 VPS 或免费 PaaS）；用你自己的反向代理 / TLS 暴露 | — |
 
@@ -232,12 +233,16 @@ curl -N -X POST http://127.0.0.1:8000/ask -H 'Content-Type: application/json' \
 代理不会掐断长请求）、`POST /agent`（ReAct，JSON）、`POST /ingest`（立即返回
 **202 + job_id**——ingest 要跑数分钟，远超代理超时——用 `GET /ingest/{job_id}`
 轮询状态/结果）。每个 `/ask` 和 `/agent` 响应都带延迟、token 用量、
-`$/query` 估算（Wave 5B），并在设置了 `LANGFUSE_*` 时带一个 `trace_url`——其 trace
+按每次调用**实际使用的模型**计价的 `$/query` 估算（价格表中没有的模型会标记
+`cost_estimated: false`），并在设置了 `LANGFUSE_*` 时带一个 `trace_url`——其 trace
 嵌套了 retrieve / llm / tool 各 span（fail-open：tracing 不会拖垮请求）。
+意外失败返回稳定的 `internal_error` 错误码——异常细节只留在服务端日志里。
 
 **鉴权与部署（域名无关）。** 设 `API_TOKEN` 即可让 `/ask /agent /ingest`
 （含 `/ingest/{job_id}`）需要 `Authorization: Bearer <token>`（`/health` 保持开放）；设 `API_ROOT_PATH`（如 `/finrag`）
-让服务跑在反向代理的某个路径前缀下。典型的公开部署把**后台留在 localhost**，只把
+让服务跑在反向代理的某个路径前缀下。公开暴露时设 `RATE_LIMIT_ENABLED=1`：昂贵路由按
+token（未鉴权时按代理上报的客户端 IP）限流——`/ask` 10 次/分、`/agent` 3 次/分、
+`/ingest` 2 次/时——泄露的 URL 或 token 烧不掉免费档的 LLM/embedding 配额。典型的公开部署把**后台留在 localhost**，只把
 **Streamlit UI 作为唯一公网入口**挂在某个子路径上 —— UI 在服务端通过
 `FINRAG_API_URL` + `FINRAG_API_TOKEN` 调后台，token 不进浏览器。可用仓库里的
 `docker compose up`（[`Dockerfile`](Dockerfile) / [`compose.yaml`](compose.yaml) 一个容器跑两个服务），
@@ -319,6 +324,12 @@ claude mcp add --transport http finrag https://your-domain/mcp \
   }
 }
 ```
+
+同一套护栏覆盖整个 MCP 面：`ask_filings` / `research_agent` 从 RAG/agent 路径继承防御；
+直接暴露的 Wave 4 工具会先筛查字符串入参，再像 agent observation 一样筛查输出
+（投毒的摘录会被扣留，而不是返回给客户端）。对外暴露时请把
+`FINRAG_MCP_ALLOWED_HOSTS`（host 白名单）和 `MCP_TOKEN`（bearer 鉴权）一起设置——
+在代理 TLS 之上再加一层纵深防御。
 
 ### 实际使用验收
 

@@ -16,8 +16,8 @@ import re
 import tiktoken
 from psycopg.types.json import Jsonb
 
+from src import db
 from src.clients.edgar import EdgarCompanyInfo, EdgarFiling
-from src.db import get_conn
 from src.embed import embed
 from src.financial.edgar import company_info_for_ticker, fetch_filing
 
@@ -274,9 +274,10 @@ def ingest(
         )
 
     # Single atomic transaction: company upsert → filing_type resolve → document upsert → chunks.
-    # The pooled connection runs in autocommit, so wrap the multi-statement write in an
-    # explicit transaction() — it commits on success and rolls back on any exception.
-    with get_conn() as conn, conn.transaction():
+    # db.run_write opens the explicit transaction (commit on success, rollback on
+    # any exception) and retries the whole — idempotent — write on a transient
+    # Neon failure, so the minutes of embedding work above are not lost to a blip.
+    def _write(conn) -> None:
         # Serialize concurrent ingests of the same filing: without the lock, two
         # simultaneous requests interleave the DELETE+INSERT chunk replacement.
         # xact-scoped, so it releases automatically at commit/rollback.
@@ -336,16 +337,22 @@ def ingest(
         # Replace all chunks so re-ingestion is idempotent.
         conn.execute("DELETE FROM chunks WHERE document_id = %s", (doc_id,))
 
-        for idx, (text, vector, meta) in enumerate(
-            zip(texts, vectors, metadatas, strict=True)
-        ):
-            token_count = len(_ENCODING.encode(text))
-            conn.execute(
+        # One batched round-trip for all chunks: a filing produces hundreds of
+        # rows, and per-row INSERTs over a remote Neon link dominate write time.
+        rows = [
+            (doc_id, idx, text, len(_ENCODING.encode(text)), vector, Jsonb(meta))
+            for idx, (text, vector, meta) in enumerate(
+                zip(texts, vectors, metadatas, strict=True)
+            )
+        ]
+        with conn.cursor() as cur:
+            cur.executemany(
                 """
                 INSERT INTO chunks (document_id, chunk_index, content, tokens, embedding, metadata)
                 VALUES (%s, %s, %s, %s, %s::vector, %s)
                 """,
-                (doc_id, idx, text, token_count, vector, Jsonb(meta)),
+                rows,
             )
 
+    db.run_write(_write)
     return len(texts)

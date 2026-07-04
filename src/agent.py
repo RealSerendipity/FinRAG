@@ -83,7 +83,12 @@ class AgentResult:
 
 
 def _first_json_obj(text: str) -> dict | None:
-    """Extract the first balanced {...} object from text, tolerating braces in strings."""
+    """Extract the first balanced {...} object from text, tolerating braces in strings.
+
+    String state is only tracked inside an object (depth > 0): a lone quote in
+    surrounding prose would otherwise open a phantom string and swallow the real
+    JSON that follows it.
+    """
     depth = 0
     start = -1
     in_str = False
@@ -98,7 +103,8 @@ def _first_json_obj(text: str) -> dict | None:
                 in_str = False
             continue
         if ch == '"':
-            in_str = True
+            if depth > 0:
+                in_str = True
         elif ch == "{":
             if depth == 0:
                 start = i

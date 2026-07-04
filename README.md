@@ -36,7 +36,9 @@ What makes it stand out:
   tsvector BM25 (RRF) and NVIDIA NeMo reranking; recall@10 **0.72 → 0.885** across the
   Wave 3 ablations.
 - **Cited, structured answers** — pydantic-validated answers where every claim points
-  to a real filing chunk; hallucinated citations are rejected, not rendered.
+  to a real filing chunk; hallucinated citations are rejected, not rendered, and each
+  citation's quote is checked against the cited chunk's text (a fabricated quote is
+  returned as `verified: false`, never presented as evidence).
 - **Hand-written ReAct agent + 5 tools** — a from-scratch Thought → Action →
   Observation loop (no framework) over filing retrieval, SEC XBRL metric lookup,
   cross-company comparison, web search, and a calculator, with a LangGraph A/B.
@@ -142,7 +144,7 @@ Observation, no agent framework — over five tools:
 | ---- | ------ | --- |
 | `retrieve_filing` | hybrid + rerank retriever (Wave 3) | narrative / qualitative facts in ingested filings |
 | `lookup_metric` | SEC XBRL `companyconcept` API | one audited annual figure (no RAG) |
-| `compare_companies` | SEC XBRL | the same metric across companies, side by side |
+| `compare_companies` | SEC XBRL | the same metric across companies, side by side (latest **common** fiscal year when `year` is omitted) |
 | `calculator` | AST eval (no `eval`) | ratios, % change, sums |
 | `web_search` | Tavily (optional) | out-of-corpus facts |
 
@@ -187,7 +189,7 @@ Run it: `uv run python -m src.agent "..."` or `uv run python eval/run_eval.py --
 | Tracing                     | Langfuse Cloud                                                       | —                                             |
 | Output validation           | pydantic                                                             | —                                             |
 | Guardrails (Wave 6)         | deterministic injection / PII / output screens + NVIDIA NemoGuard content-safety | OpenAI Moderation                |
-| MCP (Wave 6)                | official `mcp` Python SDK as stdio server                            | —                                             |
+| MCP (Wave 6)                | official `mcp` Python SDK — stdio + streamable HTTP server           | —                                             |
 | API / UI                    | FastAPI (SSE) + Streamlit                                            | —                                             |
 | Deployment                  | Docker / compose on any VPS or free-tier PaaS; front with your own reverse proxy / TLS | —                            |
 
@@ -261,13 +263,20 @@ pings so proxies don't cut the stream), `POST /agent` (ReAct, JSON),
 `POST /ingest` (returns **202 + job_id** immediately — ingest runs minutes, past
 proxy timeouts — poll `GET /ingest/{job_id}` for status/results). Every `/ask`
 and `/agent` response carries latency,
-token usage, a `$/query` estimate (Wave 5B), and — with `LANGFUSE_*` set — a
+token usage, a `$/query` estimate priced by the model that actually served each
+call (`cost_estimated: false` flags a model missing from the price table), and —
+with `LANGFUSE_*` set — a
 `trace_url` whose trace nests the retrieve / llm / tool spans (tracing is
-fail-open: it never breaks a request).
+fail-open: it never breaks a request). Unexpected failures return a stable
+`internal_error` code — exception details stay in the server log.
 
 **Auth & deploy (domain-agnostic).** Set `API_TOKEN` to gate `/ask /agent /ingest`
 (and `/ingest/{job_id}`) behind `Authorization: Bearer <token>` (`/health` stays open); set `API_ROOT_PATH`
-(e.g. `/finrag`) to serve under a path prefix behind a reverse proxy. A typical
+(e.g. `/finrag`) to serve under a path prefix behind a reverse proxy. Set
+`RATE_LIMIT_ENABLED=1` for any public exposure: the expensive routes are then
+rate-limited per token (per proxy-reported client IP when unauthenticated) —
+`/ask` 10/min, `/agent` 3/min, `/ingest` 2/hour — so a leaked URL or token
+cannot burn the free-tier LLM/embedding quotas. A typical
 public deploy keeps the **backend on localhost** and puts the **Streamlit UI as the
 only public surface** at a subpath — the UI reaches the API server-side via
 `FINRAG_API_URL` + `FINRAG_API_TOKEN`, so the token never reaches the browser.
@@ -371,7 +380,12 @@ or as a config entry (`.mcp.json`, Cursor, VS Code, …):
 ```
 
 Asking "What was AAPL's revenue in FY2024?" calls finrag's `ask_filings`
-and answers with citations to the SEC source. The same input guardrails apply.
+and answers with citations to the SEC source. The same guardrails apply across the
+whole MCP surface: `ask_filings` / `research_agent` inherit them from the RAG/agent
+paths, and the directly exposed Wave 4 tools screen their string inputs before
+running and their outputs like agent observations (a poisoned excerpt is withheld,
+not returned). For network exposure, set `FINRAG_MCP_ALLOWED_HOSTS` (host allow-list)
+together with `MCP_TOKEN` (bearer auth) — defence in depth on top of your proxy's TLS.
 
 ### Verify it works
 

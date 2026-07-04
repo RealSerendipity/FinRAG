@@ -14,8 +14,16 @@ load_dotenv()
 # ----- LLM -----
 # nvidia is the primary provider (generation + judge); the closed providers are
 # backups. Order here is cosmetic (used only in error messages); membership, not
-# position, drives dispatch.
-_KNOWN_PROVIDERS = ("nvidia", "gemini", "anthropic", "openai")
+# position, drives dispatch. Public: llm.py validates providers against this.
+KNOWN_PROVIDERS = ("nvidia", "gemini", "anthropic", "openai")
+
+# ----- Shared limits -----
+# MAX_TOP_K: the user-facing top_k cap, shared by the API request model and the
+# RAG input model so the two layers cannot drift apart.
+# MAX_CANDIDATES: the internal retrieval/rerank candidate-pool cap (RetrieveInput
+# accepts pool-sized top_k values when called from rerank/multi-query paths).
+MAX_TOP_K = 50
+MAX_CANDIDATES = 1000
 
 CommaList = Annotated[list[str], NoDecode]
 
@@ -50,7 +58,7 @@ class Settings(BaseSettings):
     RETRIEVAL_MODE: str = "dense"
     QUERY_REWRITE: str = "none"
     RERANK_ENABLED: bool = False
-    RERANK_CANDIDATES: int = Field(default=50, ge=1, le=1000)
+    RERANK_CANDIDATES: int = Field(default=50, ge=1, le=MAX_CANDIDATES)
     RERANKER_PROVIDER: str = "nvidia"
     RERANKER_MODEL: str = ""
     RERANKER_BASE_URL: str = ""
@@ -64,6 +72,11 @@ class Settings(BaseSettings):
     # MCP_TOKEN: bearer token required by the MCP server's HTTP (streamable-http)
     # transport when exposed as a network service. Unset = no auth (stdio / local only).
     MCP_TOKEN: str | None = None
+    # RATE_LIMIT_ENABLED: per-token/IP rate limits on the expensive API routes
+    # (/ask /agent /ingest). Off by default (local dev, tests — same convention as
+    # API_TOKEN); set 1 for any public exposure so a leaked URL/token cannot burn
+    # the free LLM/embedding quotas.
+    RATE_LIMIT_ENABLED: bool = False
     # ----- Guardrails (Wave 6) -----
     # GUARDRAILS_ENABLED: run the deterministic input/context/output screens in the
     #   ask/agent path. On by default (a security wave is secure by default); the
@@ -194,7 +207,8 @@ def llm_provider() -> str:
     val = _get_settings().LLM_PROVIDER
     if not val:
         raise RuntimeError(
-            "LLM_PROVIDER is not set. Add it to .env: LLM_PROVIDER=gemini|anthropic|openai|nvidia"
+            "LLM_PROVIDER is not set. Add it to .env: "
+            f"LLM_PROVIDER={'|'.join(KNOWN_PROVIDERS)}"
         )
     return val
 
@@ -231,7 +245,7 @@ def _default_model_from_env(provider: str, current_settings: Settings | None = N
     if field_name is None:
         raise ValueError(
             f"Unknown LLM_PROVIDER: {provider!r}. "
-            f"Set LLM_PROVIDER to one of: {', '.join(_KNOWN_PROVIDERS)}"
+            f"Set LLM_PROVIDER to one of: {', '.join(KNOWN_PROVIDERS)}"
         )
     current_settings = current_settings or _get_settings()
     models = getattr(current_settings, field_name)
@@ -383,6 +397,11 @@ def api_token() -> str | None:
 def mcp_token() -> str | None:
     """Bearer token required by the MCP HTTP transport; None disables auth."""
     return _get_settings().MCP_TOKEN
+
+
+def rate_limit_enabled() -> bool:
+    """Whether the expensive API routes enforce per-token/IP rate limits."""
+    return _get_settings().RATE_LIMIT_ENABLED
 
 
 # ----- Guardrails (Wave 6) -----

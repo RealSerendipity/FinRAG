@@ -113,14 +113,18 @@ def get_conn():
         yield conn
 
 
+# Transient failure modes shared by the read and write retry paths: Neon
+# free-tier drops connections mid-statement (SSL "bad record mac", server-closed)
+# and a saturated pool times out at checkout.
+_TRANSIENT_EXCS = (psycopg.OperationalError, psycopg.InterfaceError, PoolTimeout)
+
+
 def query(sql: str, params=None, *, retries: int = 3) -> list:
     """Run a read query and return fetchall(), retrying transient DB failures.
 
-    Neon free-tier intermittently drops the connection mid-query (SSL "bad record
-    mac", server-closed, operational errors). A single retrieval shouldn't crash a
-    long eval run over a blip, so we retry on a fresh pooled connection with
-    exponential back-off (the pool discards a connection broken by the failure).
-    Not used for writes (those need a transaction).
+    A single retrieval shouldn't crash a long eval run over a Neon blip, so we
+    retry on a fresh pooled connection with exponential back-off (the pool
+    discards a connection broken by the failure).
     """
     delay = 0.5
     last: Exception | None = None
@@ -128,7 +132,32 @@ def query(sql: str, params=None, *, retries: int = 3) -> list:
         try:
             with get_conn() as conn:
                 return conn.execute(sql, params).fetchall()
-        except (psycopg.OperationalError, psycopg.InterfaceError, PoolTimeout) as exc:
+        except _TRANSIENT_EXCS as exc:
+            last = exc
+            if attempt < retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+    raise last  # unreachable; satisfies type checker
+
+
+def run_write(fn, *, retries: int = 3):
+    """Run `fn(conn)` inside one explicit transaction, retrying transient failures.
+
+    The whole transaction re-runs on a retry, so `fn` must be idempotent —
+    finrag's writes are upserts / delete-then-insert replacements, which are.
+    This is the write-side counterpart of query()'s retry: an ingest has already
+    paid minutes of EDGAR + embedding work by the time it writes, and that work
+    (held in memory) should survive a dropped Neon connection.
+    """
+    delay = 0.5
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with get_conn() as conn, conn.transaction():
+                return fn(conn)
+        except _TRANSIENT_EXCS as exc:
             last = exc
             if attempt < retries - 1:
                 time.sleep(delay)

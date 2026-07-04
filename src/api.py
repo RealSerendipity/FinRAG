@@ -20,14 +20,18 @@ path prefix behind a proxy. Both default off, so local dev and tests are unchang
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
+import logging
 import threading
 import time
 import uuid
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -36,6 +40,8 @@ from src.agent import run_agent
 from src.db import bootstrap
 from src.ingest import ingest as run_ingest
 from src.rag import ask as run_ask
+
+logger = logging.getLogger(__name__)
 
 # root_path lets the app sit behind a path-stripping proxy (e.g. a Cloudflare
 # Worker routing www.example.com/finrag/* → here): routes stay at "/", while
@@ -51,6 +57,38 @@ app = FastAPI(
 # + LLM); Cloudflare cuts idle connections at ~100 s, so the stream must carry
 # comment pings well inside that window while the worker thread runs.
 _SSE_PING_SECONDS = 15
+
+# Per-route rate limits (enforced only when RATE_LIMIT_ENABLED is set). Sized to
+# the cost of each route: /agent runs up to 20 LLM calls, /ingest fetches EDGAR
+# and embeds thousands of chunks. GET /ingest/{job_id} stays unlimited (cheap
+# in-memory poll used every few seconds while a job runs).
+_RATE_ASK = "10/minute"
+_RATE_AGENT = "3/minute"
+_RATE_INGEST = "2/hour"
+
+
+def _rate_key(request: Request) -> str:
+    """Rate-limit bucket key: bearer token when present, else the client IP.
+
+    A shared token maps to ONE global bucket — the point is capping total spend
+    on the free LLM/embedding quotas, not per-user fairness. The token is hashed
+    so it never appears in limiter storage or error messages. Unauthenticated
+    requests bucket by IP; behind the Cloudflare tunnel the socket peer is
+    localhost, so trust the proxy-provided client IP headers first.
+    """
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        return "tok:" + hashlib.sha256(auth[7:].encode()).hexdigest()[:16]
+    return (
+        request.headers.get("cf-connecting-ip")
+        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        or (request.client.host if request.client else "anonymous")
+    )
+
+
+limiter = Limiter(key_func=_rate_key, enabled=config.rate_limit_enabled())
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -77,7 +115,7 @@ class AskRequest(BaseModel):
     ticker: str | None = None
     year: int | None = Field(default=None, ge=1994, le=2030)
     period: str | None = None
-    top_k: int = Field(default=5, ge=1, le=50)
+    top_k: int = Field(default=5, ge=1, le=config.MAX_TOP_K)
 
 
 class AgentRequest(BaseModel):
@@ -121,11 +159,15 @@ def _ask_sync(req: AskRequest) -> dict:
         trace_id = obs.current_trace_id()
     usage = dict(meter)
     obs.flush()
+    # Priced from the per-model usage buckets (the model that actually served
+    # each call), not the configured default model.
+    cost_usd, cost_known = cost.estimate_meter(usage)
     return {
         "text": answer.text,
         "citations": [c.model_dump() for c in answer.citations],
         "usage": usage,
-        "cost_usd": round(cost.estimate(config.llm_model(), usage), 6),
+        "cost_usd": round(cost_usd, 6),
+        "cost_estimated": cost_known,
         "latency_ms": round((time.monotonic() - t0) * 1000),
         "trace_url": obs.trace_url(trace_id),
     }
@@ -139,6 +181,7 @@ def _agent_sync(req: AgentRequest) -> dict:
         trace_id = obs.current_trace_id()
     usage = dict(meter)
     obs.flush()
+    cost_usd, cost_known = cost.estimate_meter(usage)
     return {
         "answer": result.answer,
         "steps": [
@@ -149,7 +192,8 @@ def _agent_sync(req: AgentRequest) -> dict:
         "tools_used": result.tools_used,
         "stopped": result.stopped,
         "usage": usage,
-        "cost_usd": round(cost.estimate(config.llm_model(), usage), 6),
+        "cost_usd": round(cost_usd, 6),
+        "cost_estimated": cost_known,
         "latency_ms": round((time.monotonic() - t0) * 1000),
         "trace_url": obs.trace_url(trace_id),
     }
@@ -166,8 +210,14 @@ def _ingest_sync(req: IngestRequest) -> dict:
             )
             results.append({"ticker": ticker, "chunks": chunks,
                             "elapsed_s": round(time.monotonic() - t0, 1)})
-        except Exception as exc:  # noqa: BLE001 — report per-ticker, don't fail the batch
-            results.append({"ticker": ticker, "error": f"{type(exc).__name__}: {exc}",
+        except ValueError as exc:
+            # Domain errors (no filing found, bad period) carry intentional,
+            # client-safe messages; report per-ticker, don't fail the batch.
+            results.append({"ticker": ticker, "error": str(exc),
+                            "elapsed_s": round(time.monotonic() - t0, 1)})
+        except Exception:  # noqa: BLE001 — unexpected details stay in server logs
+            logger.exception("ingest failed for %s", ticker)
+            results.append({"ticker": ticker, "error": _INTERNAL_ERROR,
                             "elapsed_s": round(time.monotonic() - t0, 1)})
     return {"results": results}
 
@@ -180,6 +230,11 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
+# Generic client-facing message for unexpected failures. Raw exception strings
+# can leak DSNs / internal paths, so they go to the server log only.
+_INTERNAL_ERROR = "internal error — see server logs"
+
+
 def _run_ingest_job(job_id: str, req: IngestRequest) -> None:
     with _jobs_lock:
         _jobs[job_id]["status"] = "running"
@@ -187,9 +242,10 @@ def _run_ingest_job(job_id: str, req: IngestRequest) -> None:
         outcome = _ingest_sync(req)
         with _jobs_lock:
             _jobs[job_id].update(status="done", **outcome)
-    except Exception as exc:  # noqa: BLE001 — a failed job must be reportable, not lost
+    except Exception:  # noqa: BLE001 — a failed job must be reportable, not lost
+        logger.exception("ingest job %s failed", job_id)
         with _jobs_lock:
-            _jobs[job_id].update(status="error", error=f"{type(exc).__name__}: {exc}")
+            _jobs[job_id].update(status="error", error=_INTERNAL_ERROR)
 
 
 # --------------------------------------------------------------------------- #
@@ -201,15 +257,24 @@ async def health() -> dict:
 
 
 @app.post("/ask", dependencies=[Depends(require_token)])
-async def ask(req: AskRequest) -> EventSourceResponse:
+@limiter.limit(_RATE_ASK)
+async def ask(request: Request, req: AskRequest) -> EventSourceResponse:
     """Answer a question, streamed as SSE: status → answer → done (or error)."""
 
     async def events():
         yield {"event": "status", "data": json.dumps({"stage": "processing"})}
         try:
             result = await run_in_threadpool(_ask_sync, req)
-        except Exception as exc:  # noqa: BLE001 — surface failures to the client as an event
-            yield {"event": "error", "data": json.dumps({"error": f"{type(exc).__name__}: {exc}"})}
+        except ValueError as exc:
+            # Domain errors (nothing ingested, rejected citation) are intentional,
+            # client-safe messages.
+            yield {"event": "error",
+                   "data": json.dumps({"code": "invalid_request", "error": str(exc)})}
+            return
+        except Exception:  # noqa: BLE001 — unexpected details stay in server logs
+            logger.exception("/ask failed")
+            yield {"event": "error",
+                   "data": json.dumps({"code": "internal_error", "error": _INTERNAL_ERROR})}
             return
         yield {"event": "answer", "data": json.dumps(result)}
         yield {"event": "done", "data": "{}"}
@@ -218,12 +283,14 @@ async def ask(req: AskRequest) -> EventSourceResponse:
 
 
 @app.post("/agent", dependencies=[Depends(require_token)])
-async def agent(req: AgentRequest) -> dict:
+@limiter.limit(_RATE_AGENT)
+async def agent(request: Request, req: AgentRequest) -> dict:
     return await run_in_threadpool(_agent_sync, req)
 
 
 @app.post("/ingest", status_code=202, dependencies=[Depends(require_token)])
-async def ingest(req: IngestRequest, background: BackgroundTasks) -> dict:
+@limiter.limit(_RATE_INGEST)
+async def ingest(request: Request, req: IngestRequest, background: BackgroundTasks) -> dict:
     """Accept an ingest job and return 202 immediately; poll GET /ingest/{job_id}."""
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:

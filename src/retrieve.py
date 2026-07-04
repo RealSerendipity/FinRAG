@@ -55,7 +55,7 @@ class RetrieveInput(BaseModel):
     query: str = Field(min_length=1)
     ticker: str | None = None
     period: str | None = None
-    top_k: int = Field(default=5, ge=1, le=1000)
+    top_k: int = Field(default=5, ge=1, le=config.MAX_CANDIDATES)
 
     @field_validator("query", mode="before")
     @classmethod
