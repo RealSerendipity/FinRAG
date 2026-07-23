@@ -3,18 +3,18 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <a href="https://www.realserendipity.org/finrag/">
+  <a href="https://finrag-frontend.vercel.app/">
     <img alt="Live Demo" src="docs/live-demo-badge.svg">
   </a>
 </p>
 
 <p align="center">
-  <a href="https://www.realserendipity.org/finrag/">
+  <a href="https://finrag-frontend.vercel.app/">
     <img alt="finrag — RAG mode answering over Apple's 10-K with citations" src="docs/rag.png" width="820">
   </a>
 </p>
 
-> ### 🔗 Try it live → **[www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/)**
+> ### 🔗 Try it live → **[finrag-frontend.vercel.app](https://finrag-frontend.vercel.app/)**
 > Ask a question over Apple's 10-K and get a **cited, traceable answer** in the browser — no setup.
 
 ## Overview
@@ -35,16 +35,17 @@ What makes it stand out:
 - **Hybrid retrieval + reranking** — pgvector dense search fused with Postgres
   tsvector BM25 (RRF) and NVIDIA NeMo reranking; recall@10 **0.72 → 0.885** across the
   Wave 3 ablations.
-- **Cited, structured answers** — pydantic-validated answers where every claim points
-  to a real filing chunk; hallucinated citations are rejected, not rendered, and each
-  citation's quote is checked against the cited chunk's text (a fabricated quote is
-  returned as `verified: false`, never presented as evidence).
+- **Cited, structured answers** — pydantic-validated answers whose citation IDs must
+  point to retrieved filing chunks; unknown chunk IDs reject the answer. Each quote is
+  also checked against the cited chunk and returned with `verified: false` when it
+  does not match, so the UI labels it **Unverified** instead of silently trusting it.
 - **Hand-written ReAct agent + 5 tools** — a from-scratch Thought → Action →
   Observation loop (no framework) over filing retrieval, SEC XBRL metric lookup,
   cross-company comparison, web search, and a calculator, with a LangGraph A/B.
 - **MCP server (stdio + remote HTTP)** — exposes finrag's tools over the Model Context
-  Protocol; run it locally over stdio or as a bearer-authenticated, proxy-friendly
-  network service any remote MCP client can reach.
+  Protocol; run it locally over stdio or as a proxy-friendly network service. The
+  HTTP transport enables bearer authentication when `MCP_TOKEN` is set, which is
+  mandatory for any public exposure.
 - **Security guardrails + prompt-injection red team** — input / context / output
   screens (direct & indirect injection, jailbreak, system-prompt extraction, PII,
   cross-language attacks) measured by a reproducible attack-success-rate harness:
@@ -53,8 +54,8 @@ What makes it stand out:
   and a `$/query` estimate on every answer.
 - **Separated web stack** — a Next.js frontend proxies browser requests
   server-side to a FastAPI backend (including raw SSE streaming), so the API
-  token never reaches the browser. Both services are structured as independent
-  Vercel projects.
+  token never reaches the browser. The UI defaults to English and can switch to
+  Chinese; both services are structured as independent Vercel projects.
 
 The target user is a developer, analyst, who wants to inspect how the
 system ingests filings, retrieves relevant evidence, validates structured answers,
@@ -114,7 +115,6 @@ per-step ablations: [`backend/eval/reports/wave_3{a..f}.md`](backend/eval/report
 | 5A   | Public demo (FastAPI + Streamlit)                                                                                      | ✅ shipped | 4 routes live over HTTP; SSE answers + citation UI; p50 ≈ 12.6s — [`backend/eval/reports/wave_5a.md`](backend/eval/reports/wave_5a.md) |
 | 5B   | Observability, cost, caching                                                                                           | ✅ shipped | Langfuse spans (fail-open) · per-request tokens + `$/query` ($0 on NVIDIA free tier) — [`backend/eval/reports/wave_5b.md`](backend/eval/reports/wave_5b.md) |
 | 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ✅ shipped | attack-success-rate **0.29 → 0.07** (indirect injection 0.67 → 0.00); finrag exposed as an MCP server — [`backend/eval/reports/wave_6.md`](backend/eval/reports/wave_6.md) |
-| 7    | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳         | per-item resume bullets                                      |
 
 ### Wave 3 retrieval ablations
 
@@ -150,8 +150,10 @@ Observation, no agent framework — over five tools:
 | `web_search` | Tavily (optional) | out-of-corpus facts |
 
 The split is deliberate: numeric questions hit structured XBRL, not chunked prose.
-Every run logs a replayable JSONL trace to `runs/<id>.jsonl`; the agent keeps a
-small session memory (last N Q/A). Over an 18-task multi-step suite
+Each non-blocked local `Agent.run()` writes a replayable JSONL trace to
+`runs/<id>.jsonl`. A reused `Agent` instance can retain the last N Q/A pairs, while
+the public API calls `run_agent()` with a fresh instance for every request, so memory
+does not cross API requests. Over an 18-task multi-step suite
 ([`backend/eval/agent_questions.jsonl`](backend/eval/agent_questions.jsonl)):
 
 | Metric | Result |
@@ -173,14 +175,14 @@ Run it: `uv --directory backend run python -m src.agent "..."` or `uv --director
 > truncation at `\nObservation:`); the payoff is that any chat model works with
 > **zero code change** — only `LLM_PROVIDER` changes — verified live on both NVIDIA
 > and Gemini. Native function-calling is more robust in production (the API
-> guarantees structure) but provider-specific; a three-way bench (text /
-> LangGraph / native function-calling) is planned as `execution.md` **7.fc**.
+> guarantees structure) but provider-specific; native function-calling is not
+> implemented in the current codebase.
 
-## Stack (cloud APIs only — no local services)
+## Stack (managed model/data services; no local model runtime)
 
 | Layer                       | Primary                                                              | Options                                       |
 | --------------------------- | -------------------------------------------------------------------- | --------------------------------------------- |
-| LLM — generation            | **NVIDIA NIM** `meta/llama-3.3-70b-instruct` (free open-weight)      | Gemini, Anthropic Claude, OpenAI              |
+| LLM — generation            | **NVIDIA NIM** `meta/llama-3.3-70b-instruct` (open-weight)           | Gemini, Anthropic Claude, OpenAI              |
 | LLM — judge (eval)          | **NVIDIA NIM** `nvidia/llama-3.3-nemotron-super-49b-v1` (reasoning-tuned, ≥ generator) | Gemini             |
 | Embedding                   | NVIDIA NeMo Retriever `nvidia/nv-embedqa-e5-v5` (1024d)              | Gemini `gemini-embedding-001`                 |
 | Reranker                    | NVIDIA NeMo Retriever `nvidia/rerank-qa-mistral-4b`                  | —                                             |
@@ -188,11 +190,12 @@ Run it: `uv --directory backend run python -m src.agent "..."` or `uv --director
 | Agent                       | hand-written ReAct + LangGraph rewrite (Wave 4)                      | —                                             |
 | Eval                        | hand-written metrics (recall@k / MRR / nDCG + LLM judge)             | —                                             |
 | Tracing                     | Langfuse Cloud                                                       | —                                             |
-| Output validation           | pydantic                                                             | —                                             |
-| Guardrails (Wave 6)         | deterministic injection / PII / output screens + NVIDIA NemoGuard content-safety | OpenAI Moderation                |
+| Output validation           | pydantic + citation ID / quote integrity checks                      | —                                             |
+| Guardrails (Wave 6)         | deterministic injection / PII / output screens + optional NVIDIA NemoGuard content-safety | —                              |
 | MCP (Wave 6)                | official `mcp` Python SDK — stdio + streamable HTTP server           | —                                             |
-| API / UI                    | FastAPI (SSE) + Streamlit                                            | —                                             |
-| Deployment                  | Docker / compose on any VPS or free-tier PaaS; front with your own reverse proxy / TLS | —                            |
+| API / UI                    | FastAPI (SSE + JSON) + Next.js 16 / React 19                         | Streamlit (legacy VPS UI)                      |
+| Async ingestion             | persisted Neon job state + Upstash QStash delivery                   | CLI ingestion runs synchronously              |
+| Deployment                  | two Vercel projects (`backend` + `frontend`)                         | Docker Compose on a VPS                        |
 
 Provider switching is environment-controlled (`LLM_PROVIDER`,
 `LLM_JUDGE_PROVIDER`, `EMBEDDING_PROVIDER`, `RERANKER_PROVIDER`) and implemented
@@ -207,40 +210,70 @@ judge a full eval run.
 
 ## Quick start
 
-```bash
-uv --directory backend sync --extra full --group dev
-cp backend/.env.example .env
-# fill in GEMINI_API_KEY + DATABASE_URL + NVIDIA_API_KEY
+### Prerequisites
 
-# Run tests
+- Python 3.11 or 3.12 and [`uv`](https://docs.astral.sh/uv/)
+- Node.js 20.19 or newer and npm
+- PostgreSQL with pgvector (the production deployment uses Neon)
+- A real contact email for SEC EDGAR and an NVIDIA API key
+
+### Backend and CLI
+
+```bash
+git clone https://github.com/RealSerendipity/FinRAG.git
+cd FinRAG
+
+cp backend/.env.example .env
+# Set at least EDGAR_USER_AGENT, DATABASE_URL, and NVIDIA_API_KEY.
+# The template already selects NVIDIA for generation, embeddings, and reranking.
+
+uv --directory backend sync --group dev
 uv --directory backend run pytest
 
-# Ingest a filing and ask a question (Wave 1c)
+# The first business command bootstraps the database schema automatically.
 uv --directory backend run finrag ingest --tickers AAPL --year 2024
 uv --directory backend run finrag ask --ticker AAPL --year 2024 "What was Apple's R&D expense?"
 ```
 
-### Web app
-
-> **Live reference:** [www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/).
-
-Run the separated FastAPI and Next.js services locally:
+Gemini, Anthropic, OpenAI, Langfuse, Tavily, and NemoGuard are optional. Install
+the `full` extra only for the legacy Streamlit UI or the optional Docling
+experiment:
 
 ```bash
-# Terminal 1
-uv --directory backend run uvicorn src.api:app --host 0.0.0.0 --port 8000
-
-# Terminal 2
-cd frontend
-cp .env.example .env.local
-# Set FINRAG_API_TOKEN to the backend API_TOKEN value.
-npm install
-npm run dev                    # open http://localhost:3000
+uv --directory backend sync --extra full --group dev
 ```
 
-The Next.js UI has a **RAG / Agent mode toggle** (single-shot cited answer vs. a
-multi-step tool-using agent) and a durable **ingest panel**. Its route handlers
-proxy requests to FastAPI; credentials stay on the server.
+### Local FastAPI + Next.js
+
+Set a non-empty `API_TOKEN` in the root `.env`. Then copy the frontend template
+and set `FINRAG_API_TOKEN` to the same value:
+
+```bash
+cp frontend/.env.example frontend/.env.local
+# frontend/.env.local:
+# FINRAG_API_URL=http://127.0.0.1:8000
+# FINRAG_API_TOKEN=<same value as API_TOKEN in .env>
+npm --prefix frontend ci
+```
+
+Run both services from the repository root:
+
+```bash
+# Terminal 1: FastAPI
+uv --directory backend run uvicorn src.api:app --host 0.0.0.0 --port 8000
+
+# Terminal 2: Next.js
+npm --prefix frontend run dev  # open http://localhost:3000
+```
+
+The Next.js UI provides a **RAG / Agent mode toggle** (single-shot cited answer
+vs. a multi-step tool-using agent) and a durable **ingest panel**. Route handlers
+proxy browser requests to FastAPI, so credentials stay on the server.
+
+The local RAG and Agent modes work with the setup above. The web ingest panel
+publishes background work through QStash, so it additionally requires
+`QSTASH_TOKEN`, both QStash signing keys, and a publicly reachable
+`FINRAG_PUBLIC_API_URL`. For a completely local setup, use the CLI to ingest.
 
 | Agent mode — running | Agent mode — multi-step tool trace |
 | :---: | :---: |
@@ -250,58 +283,83 @@ proxy requests to FastAPI; credentials stay on the server.
 FY2023 → FY2024?"): the ReAct loop calls `lookup_metric` (SEC XBRL) for R&D and
 revenue across both years, then `calculator`, and shows the full reasoning trace.*
 
-The previous Streamlit UI remains available for the VPS/container deployment:
+Run the current checks from the repository root:
 
 ```bash
-# From the repository root
-docker compose -f infra/compose.yaml up --build
-# Open http://localhost:8501
+uv --directory backend run pytest
+npm --prefix frontend run test:run
+npm --prefix frontend run lint
+npm --prefix frontend run build
 ```
 
+### Production deployment
+
+| Service | Public URL |
+| --- | --- |
+| Next.js frontend | [https://finrag-frontend.vercel.app](https://finrag-frontend.vercel.app/) |
+| FastAPI backend | [https://fin-rag-nu.vercel.app](https://fin-rag-nu.vercel.app/) |
+| Backend health | [https://fin-rag-nu.vercel.app/health](https://fin-rag-nu.vercel.app/health) |
+
+The same GitHub repository is imported into Vercel twice:
+
+| Vercel project | Root Directory | Configuration |
+| --- | --- | --- |
+| `fin-rag` | `backend` | FastAPI entrypoint in `backend/pyproject.toml`; function settings in `backend/vercel.json` |
+| `finrag-frontend` | `frontend` | Next.js is detected automatically |
+
+Set these frontend production variables:
+
+```dotenv
+FINRAG_API_URL=https://fin-rag-nu.vercel.app
+FINRAG_API_TOKEN=<same value as backend API_TOKEN>
+```
+
+The backend needs the variables from `backend/.env.example` for the selected
+providers, Neon, and auth. For asynchronous web ingestion, also set
+`FINRAG_PUBLIC_API_URL=https://fin-rag-nu.vercel.app` and connect Upstash QStash;
+the integration injects `QSTASH_URL`, `QSTASH_TOKEN`,
+`QSTASH_CURRENT_SIGNING_KEY`, and `QSTASH_NEXT_SIGNING_KEY`. Redeploy a service
+after changing its environment variables.
+
+### Docker / VPS
+
+The legacy Streamlit UI remains available for the single-container VPS path.
+The image reads the root `.env`, runs FastAPI internally on port 8000, and exposes
+only Streamlit on port 8501:
+
 ```bash
-# Or hit the API directly
+docker compose -f infra/compose.yaml up --build
+# open http://localhost:8501
+```
+
+Put port 8501 behind your own TLS reverse proxy for public VPS use. As with the
+local web ingest panel, asynchronous ingestion needs QStash and a public callback
+URL; CLI ingestion does not.
+
+### Direct API
+
+```bash
 curl http://127.0.0.1:8000/health
-curl -N -X POST http://127.0.0.1:8000/ask -H 'Content-Type: application/json' \
+curl -N -X POST http://127.0.0.1:8000/ask \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer replace-with-your-api-token' \
   -d '{"question":"What was Apple total net sales in fiscal 2024?","ticker":"AAPL","year":2024}'
 ```
 
 Routes: `GET /health`, `POST /ask` (SSE: status → answer → done, with heartbeat
-pings so proxies don't cut the stream), `POST /agent` (ReAct, JSON),
-`POST /ingest` (returns **202 + job_id** immediately — ingest runs minutes, past
-proxy timeouts — poll `GET /ingest/{job_id}` for status/results). Every `/ask`
-and `/agent` response carries latency,
-token usage, a `$/query` estimate priced by the model that actually served each
-call (`cost_estimated: false` flags a model missing from the price table), and —
-with `LANGFUSE_*` set — a
-`trace_url` whose trace nests the retrieve / llm / tool spans (tracing is
-fail-open: it never breaks a request). Unexpected failures return a stable
-`internal_error` code — exception details stay in the server log.
+pings), `POST /agent` (ReAct, JSON), `POST /ingest` (returns **202 + job_id**),
+and `GET /ingest/{job_id}` (poll status/results). Each `/ask` and `/agent`
+response includes latency, token usage, a model-aware `$/query` estimate, and,
+when `LANGFUSE_*` is configured, a fail-open `trace_url`. Unexpected failures
+return a stable `internal_error` code while details remain in server logs.
 
-**Auth & deploy (domain-agnostic).** Set `API_TOKEN` to gate `/ask /agent /ingest`
-(and `/ingest/{job_id}`) behind `Authorization: Bearer <token>` (`/health` stays open); set `API_ROOT_PATH`
-(e.g. `/finrag`) to serve under a path prefix behind a reverse proxy. Set
-`RATE_LIMIT_ENABLED=1` for any public exposure: the expensive routes are then
-rate-limited per token (per proxy-reported client IP when unauthenticated) —
-`/ask` 10/min, `/agent` 3/min, `/ingest` 2/hour — so a leaked URL or token
-cannot burn the free-tier LLM/embedding quotas. A typical
-public deploy keeps the **backend on localhost** and puts the **Streamlit UI as the
-only public surface** at a subpath — the UI reaches the API server-side via
-`FINRAG_API_URL` + `FINRAG_API_TOKEN`, so the token never reaches the browser.
-Ship the VPS version with `docker compose -f infra/compose.yaml up`
-([`infra/Dockerfile`](infra/Dockerfile) /
-[`infra/compose.yaml`](infra/compose.yaml) run FastAPI and Streamlit in one container) — then put it
-behind your own reverse proxy / TLS (or your platform's built-in HTTPS).
-
-For Vercel, import this GitHub repository twice:
-
-| Vercel project | Root Directory | Configuration |
-| --- | --- | --- |
-| Backend | `backend` | FastAPI entrypoint in `backend/pyproject.toml`; function settings in `backend/vercel.json` |
-| Frontend | `frontend` | Next.js is detected automatically; set `FINRAG_API_URL` and `FINRAG_API_TOKEN` |
-
-The backend also needs its provider, Neon, QStash, and public callback
-environment variables. Vercel configuration files stay inside the service root
-that Vercel builds; `infra/` is only for repository-managed deployment assets.
+**Authentication.** Set `API_TOKEN` to protect `/ask`, `/agent`, `/ingest`, and
+`/ingest/{job_id}` with `Authorization: Bearer <token>`; `/health` remains
+public. `API_ROOT_PATH` supports a reverse-proxy path prefix. For public
+exposure, set `RATE_LIMIT_ENABLED=1`: `/ask` is limited to 10/minute, `/agent`
+to 3/minute, and `/ingest` to 2/hour. Both Next.js and Streamlit call FastAPI
+server-side through `FINRAG_API_URL` + `FINRAG_API_TOKEN`, so the API token never
+reaches the browser.
 
 ## Security & MCP (Wave 6)
 
@@ -359,7 +417,7 @@ or as a config entry (`.mcp.json`, `claude_desktop_config.json`, Cursor, …):
   "mcpServers": {
     "finrag": {
       "command": "uv",
-      "args": ["run", "python", "-m", "src.mcp_server"],
+      "args": ["--directory", "backend", "run", "python", "-m", "src.mcp_server"],
       "cwd": "/absolute/path/to/finrag"
     }
   }
@@ -367,9 +425,11 @@ or as a config entry (`.mcp.json`, `claude_desktop_config.json`, Cursor, …):
 ```
 
 *Remote (Streamable HTTP)* — to expose finrag as a **network service** any remote MCP
-client can reach. It runs stateless (proxy/tunnel-friendly) and requires
-`Authorization: Bearer <MCP_TOKEN>`. Run it bound to localhost and front it with your
-reverse proxy / tunnel (TLS + the same `MCP_TOKEN`), like the web demo:
+client can reach. It runs stateless (proxy/tunnel-friendly). When `MCP_TOKEN` is
+set, requests must send `Authorization: Bearer <MCP_TOKEN>`; without it the server
+starts unauthenticated and prints a warning. Always set it for network exposure.
+Run the service bound to localhost and front it with your reverse proxy / tunnel
+(TLS + the same `MCP_TOKEN`), like the web demo:
 
 ```bash
 MCP_TOKEN=your-secret FINRAG_MCP_TRANSPORT=http uv --directory backend run python -m src.mcp_server
@@ -458,8 +518,8 @@ On the AAPL 10-K eval corpus `fixed` wins — the corpus is small and number/tab
 
 The strategy name has a single source of truth (`VALID_CHUNK_STRATEGIES` in `backend/src/ingest.py`), so adding one is a small, local change:
 
-1. Write a `chunk_<name>(text, ...) -> list[str]` in `backend/src/ingest.py` (or `-> list[(child, parent)]` if it needs parent context).
-2. Add `"<name>"` to `VALID_CHUNK_STRATEGIES` and a branch in `build_chunks()` returning `list[(content, metadata)]` — put any generation-time context (e.g. a parent block) in the `metadata` dict.
+1. Write a `chunk_<name>(text, ...) -> list[str]` in `backend/src/ingest.py` (or `-> list[tuple[str, str]]` if it needs parent context).
+2. Add `"<name>"` to `VALID_CHUNK_STRATEGIES` and a branch in `build_chunks()` returning `list[tuple[str, dict]]` — put any generation-time context (e.g. a parent block) in the `metadata` dict.
 3. If you stored `metadata["parent_text"]`, generation already uses it (`rag._context_text` prefers it); nothing else to wire.
 4. The `CHUNK_STRATEGY` env var, the `--chunk-strategy` flag, and fail-fast validation all pick the name up automatically from `VALID_CHUNK_STRATEGIES`.
 5. Add a unit test in `backend/tests/test_wave3.py` and A/B it with an `backend/experiments/wave3_*.py` script against `backend/eval/run_eval.py`.
@@ -467,7 +527,12 @@ The strategy name has a single source of truth (`VALID_CHUNK_STRATEGIES` in `bac
 ## Monorepo layout
 
 ```
-frontend/            # Next.js UI and server-only FastAPI proxy
+frontend/
+  app/                # Next.js pages and fixed /api proxy Route Handlers
+  components/         # bilingual RAG, Agent, health, and ingest UI
+  lib/                # i18n, SSE parser, types, and server-only FastAPI client
+  package.json
+  package-lock.json
 backend/
   src/
     api.py            # FastAPI routes and SSE
@@ -499,4 +564,5 @@ README.zh-CN.md      # Chinese documentation (kept at repository root)
 
 ## License
 
-Personal learning / portfolio project; not production software.
+[MIT](LICENSE). This is a personal learning / portfolio project and is provided
+as-is, without warranty.
