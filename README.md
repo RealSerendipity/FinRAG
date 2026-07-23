@@ -51,9 +51,10 @@ What makes it stand out:
   **ASR 0.29 → 0.07**.
 - **Observability & cost** — fail-open Langfuse tracing with per-request token usage
   and a `$/query` estimate on every answer.
-- **Public demo on a free-tier cloud stack** — FastAPI (SSE) + Streamlit over a
-  cloud-only stack (NVIDIA NIM, Neon Postgres + pgvector), no local model servers,
-  deployable behind your own reverse proxy / TLS.
+- **Separated web stack** — a Next.js frontend proxies browser requests
+  server-side to a FastAPI backend (including raw SSE streaming), so the API
+  token never reaches the browser. Both services are structured as independent
+  Vercel projects.
 
 The target user is a developer, analyst, who wants to inspect how the
 system ingests filings, retrieves relevant evidence, validates structured answers,
@@ -92,9 +93,9 @@ attributable purely to the retrieval pipeline. † Generation metrics depend on 
 NVIDIA judge (with Gemini fallback), so read them as directional, not exact.
 These metrics plateau here by design: Wave 4+ optimize *different* axes
 (agent task success, latency / \$-per-query, attack-success-rate), not single-shot
-retrieval quality. Baseline: [`eval/reports/wave_2.md`](eval/reports/wave_2.md);
-winning config: [`eval/reports/wave_3_runeval.md`](eval/reports/wave_3_runeval.md);
-per-step ablations: [`eval/reports/wave_3{a..f}.md`](eval/reports/) (also in the
+retrieval quality. Baseline: [`backend/eval/reports/wave_2.md`](backend/eval/reports/wave_2.md);
+winning config: [`backend/eval/reports/wave_3_runeval.md`](backend/eval/reports/wave_3_runeval.md);
+per-step ablations: [`backend/eval/reports/wave_3{a..f}.md`](backend/eval/reports/) (also in the
 [ablation table](#wave-3-retrieval-ablations) below).
 
 ## Roadmap
@@ -106,21 +107,21 @@ per-step ablations: [`eval/reports/wave_3{a..f}.md`](eval/reports/) (also in the
 | 1b   | Dense retrieval + cited answer (pydantic) over local fixture                                                           | ✅ shipped | structured `Answer` with valid citations                     |
 | 1c   | EDGAR ingestion + CLI driver                                                                                           | ✅ shipped | `finrag ingest` + `finrag ask` end-to-end                    |
 | 1d   | NVIDIA NIM as cloud open-weight provider                                                                               | ✅ shipped | `LLM_PROVIDER=nvidia` round-trip                             |
-| 1.5  | Mini-eval over real AAPL FY2024 10-K (n=7, 6 positive + 1 insufficient) + prompt `v1.1` (insufficient-context returned as JSON, not bare text) | ✅ shipped | hit@5 / recall@5 / MRR / nDCG@5 / structural citation validity / LLM-judge faithfulness — numbers in [`eval/reports/wave1_5_mini_eval.md`](eval/reports/wave1_5_mini_eval.md) |
-| 2    | Eval harness (38 curated items × 5 categories, NIM judge + Gemini fallback)                                            | ✅ shipped | recall@10 0.80 / MRR 0.64 / nDCG@10 0.65 / citation validity 0.82 / faithfulness 0.84 / correctness 0.84 — details in [`eval/reports/wave_2.md`](eval/reports/wave_2.md) |
+| 1.5  | Mini-eval over real AAPL FY2024 10-K (n=7, 6 positive + 1 insufficient) + prompt `v1.1` (insufficient-context returned as JSON, not bare text) | ✅ shipped | hit@5 / recall@5 / MRR / nDCG@5 / structural citation validity / LLM-judge faithfulness — numbers in [`backend/eval/reports/wave1_5_mini_eval.md`](backend/eval/reports/wave1_5_mini_eval.md) |
+| 2    | Eval harness (38 curated items × 5 categories, NIM judge + Gemini fallback)                                            | ✅ shipped | recall@10 0.80 / MRR 0.64 / nDCG@10 0.65 / citation validity 0.82 / faithfulness 0.84 / correctness 0.84 — details in [`backend/eval/reports/wave_2.md`](backend/eval/reports/wave_2.md) |
 | 3    | Retrieval quality (chunking / table-aware / hybrid / rerank / query rewrite)                                           | ✅ shipped | recall@10 0.72 → **0.885** (hybrid + rerank); see [ablation table](#wave-3-retrieval-ablations) |
-| 4    | Hand-written ReAct agent + 5 tools, then LangGraph rewrite                                                              | ✅ shipped | task success **0.94** (17/18) · tool-call accuracy 1.00 · avg 3.0 steps — [`eval/reports/wave_4.md`](eval/reports/wave_4.md), A/B in [`wave_4_langgraph_compare.md`](eval/reports/wave_4_langgraph_compare.md) |
-| 5A   | Public demo (FastAPI + Streamlit)                                                                                      | ✅ shipped | 4 routes live over HTTP; SSE answers + citation UI; p50 ≈ 12.6s — [`eval/reports/wave_5a.md`](eval/reports/wave_5a.md) |
-| 5B   | Observability, cost, caching                                                                                           | ✅ shipped | Langfuse spans (fail-open) · per-request tokens + `$/query` ($0 on NVIDIA free tier) — [`eval/reports/wave_5b.md`](eval/reports/wave_5b.md) |
-| 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ✅ shipped | attack-success-rate **0.29 → 0.07** (indirect injection 0.67 → 0.00); finrag exposed as an MCP server — [`eval/reports/wave_6.md`](eval/reports/wave_6.md) |
+| 4    | Hand-written ReAct agent + 5 tools, then LangGraph rewrite                                                              | ✅ shipped | task success **0.94** (17/18) · tool-call accuracy 1.00 · avg 3.0 steps — [`backend/eval/reports/wave_4.md`](backend/eval/reports/wave_4.md), A/B in [`wave_4_langgraph_compare.md`](backend/eval/reports/wave_4_langgraph_compare.md) |
+| 5A   | Public demo (FastAPI + Streamlit)                                                                                      | ✅ shipped | 4 routes live over HTTP; SSE answers + citation UI; p50 ≈ 12.6s — [`backend/eval/reports/wave_5a.md`](backend/eval/reports/wave_5a.md) |
+| 5B   | Observability, cost, caching                                                                                           | ✅ shipped | Langfuse spans (fail-open) · per-request tokens + `$/query` ($0 on NVIDIA free tier) — [`backend/eval/reports/wave_5b.md`](backend/eval/reports/wave_5b.md) |
+| 6    | Security & protocols (prompt-injection red team, output guardrails, MCP server)                                        | ✅ shipped | attack-success-rate **0.29 → 0.07** (indirect injection 0.67 → 0.00); finrag exposed as an MCP server — [`backend/eval/reports/wave_6.md`](backend/eval/reports/wave_6.md) |
 | 7    | Extensions & framework comparisons (LlamaIndex / DSPy / CrewAI / Cloudflare edge / CN A-share / memory / self-correct) | ⏳         | per-item resume bullets                                      |
 
 ### Wave 3 retrieval ablations
 
 Each step is an A/B over the 38-item eval set (retrieval metrics are
 LLM-independent, so they are measured directly from `retrieve()` output). Full
-methodology and per-category tables in `eval/reports/wave_3{a..f}.md`; each
-`experiments/wave3_*.py` reproduces its row.
+methodology and per-category tables in `backend/eval/reports/wave_3{a..f}.md`; each
+`backend/experiments/wave3_*.py` reproduces its row.
 
 | Step | Change | Result (vs its baseline) | Shipped? |
 | ---- | ------ | ------------------------ | -------- |
@@ -133,11 +134,11 @@ methodology and per-category tables in `eval/reports/wave_3{a..f}.md`; each
 
 **Shipped default: fixed chunking + hybrid RRF + rerank** → recall@10 **0.722 → 0.885**, MRR **0.643 → 0.801**, nDCG@10 **0.610 → 0.798** (dense baseline → winning config; reranker `nvidia/rerank-qa-mistral-4b`, the model served on this account in place of the plan's `-v3`).
 
-**Why `QUERY_REWRITE=none` by default (3e):** against the raw baseline, HyDE trades top-rank precision (MRR −0.038 / nDCG −0.035 / recall@5 −0.047) for coverage (recall@10 +0.054 / hit@5 +0.083 / hit@10 +0.055), and multi-query is roughly neutral — neither is a clean win. The shipped path also keeps ticker/period metadata filtering, which already disambiguates the vague queries rewriting targets, and each rewrite adds an LLM call. So it ships off but stays a per-call toggle. Full per-metric breakdown and the under-specified test setup: [`eval/reports/wave_3e.md`](eval/reports/wave_3e.md).
+**Why `QUERY_REWRITE=none` by default (3e):** against the raw baseline, HyDE trades top-rank precision (MRR −0.038 / nDCG −0.035 / recall@5 −0.047) for coverage (recall@10 +0.054 / hit@5 +0.083 / hit@10 +0.055), and multi-query is roughly neutral — neither is a clean win. The shipped path also keeps ticker/period metadata filtering, which already disambiguates the vague queries rewriting targets, and each rewrite adds an LLM call. So it ships off but stays a per-call toggle. Full per-metric breakdown and the under-specified test setup: [`backend/eval/reports/wave_3e.md`](backend/eval/reports/wave_3e.md).
 
 ## Wave 4 — ReAct agent + tools
 
-A hand-written ReAct loop ([`src/agent.py`](src/agent.py)) — Thought → Action →
+A hand-written ReAct loop ([`backend/src/agent.py`](backend/src/agent.py)) — Thought → Action →
 Observation, no agent framework — over five tools:
 
 | Tool | Source | Use |
@@ -151,7 +152,7 @@ Observation, no agent framework — over five tools:
 The split is deliberate: numeric questions hit structured XBRL, not chunked prose.
 Every run logs a replayable JSONL trace to `runs/<id>.jsonl`; the agent keeps a
 small session memory (last N Q/A). Over an 18-task multi-step suite
-([`eval/agent_questions.jsonl`](eval/agent_questions.jsonl)):
+([`backend/eval/agent_questions.jsonl`](backend/eval/agent_questions.jsonl)):
 
 | Metric | Result |
 | ------ | ------ |
@@ -159,10 +160,10 @@ small session memory (last N Q/A). Over an 18-task multi-step suite
 | tool-call accuracy | **1.00** |
 | average steps / task | **3.0** (≤ 6 target) |
 
-The same loop is rewritten on LangGraph ([`src/agent_lg.py`](src/agent_lg.py)) as a
+The same loop is rewritten on LangGraph ([`backend/src/agent_lg.py`](backend/src/agent_lg.py)) as a
 two-node `StateGraph`; both produce identical tool sequences — see the A/B in
-[`eval/reports/wave_4_langgraph_compare.md`](eval/reports/wave_4_langgraph_compare.md).
-Run it: `uv run python -m src.agent "..."` or `uv run python eval/run_eval.py --suite agent`.
+[`backend/eval/reports/wave_4_langgraph_compare.md`](backend/eval/reports/wave_4_langgraph_compare.md).
+Run it: `uv --directory backend run python -m src.agent "..."` or `uv --directory backend run python eval/run_eval.py --suite agent`.
 
 > **Design choice — text ReAct vs native tool-calling.** This loop is deliberately
 > *text-based*: the model emits `Thought / Action / Action Input (JSON) / Final
@@ -207,31 +208,39 @@ judge a full eval run.
 ## Quick start
 
 ```bash
-uv sync --extra full --group dev
-cp .env.example .env
+uv --directory backend sync --extra full --group dev
+cp backend/.env.example .env
 # fill in GEMINI_API_KEY + DATABASE_URL + NVIDIA_API_KEY
 
 # Run tests
-uv run pytest
+uv --directory backend run pytest
 
 # Ingest a filing and ask a question (Wave 1c)
-uv run finrag ingest --tickers AAPL --year 2024
-uv run finrag ask --ticker AAPL --year 2024 "What was Apple's R&D expense?"
+uv --directory backend run finrag ingest --tickers AAPL --year 2024
+uv --directory backend run finrag ask --ticker AAPL --year 2024 "What was Apple's R&D expense?"
 ```
 
-### Web demo (Wave 5A / 5B)
+### Web app
 
-> **Live:** [www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/) — the Streamlit UI below, with the backend kept private (the UI is the only public surface).
+> **Live reference:** [www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/).
 
-**Fastest — one container runs both the API and the UI:**
+Run the separated FastAPI and Next.js services locally:
 
 ```bash
-cp .env.example .env          # fill DATABASE_URL + NVIDIA_API_KEY
-docker compose up --build     # then open http://localhost:8501
+# Terminal 1
+uv --directory backend run uvicorn src.api:app --host 0.0.0.0 --port 8000
+
+# Terminal 2
+cd frontend
+cp .env.example .env.local
+# Set FINRAG_API_TOKEN to the backend API_TOKEN value.
+npm install
+npm run dev                    # open http://localhost:3000
 ```
 
-The UI has a **RAG / Agent mode toggle** (single-shot cited answer vs. a multi-step
-tool-using agent) and an **ingest panel** to pull a new filing into the store.
+The Next.js UI has a **RAG / Agent mode toggle** (single-shot cited answer vs. a
+multi-step tool-using agent) and a durable **ingest panel**. Its route handlers
+proxy requests to FastAPI; credentials stay on the server.
 
 | Agent mode — running | Agent mode — multi-step tool trace |
 | :---: | :---: |
@@ -241,14 +250,12 @@ tool-using agent) and an **ingest panel** to pull a new filing into the store.
 FY2023 → FY2024?"): the ReAct loop calls `lookup_metric` (SEC XBRL) for R&D and
 revenue across both years, then `calculator`, and shows the full reasoning trace.*
 
-Or run the two services directly for development:
+The previous Streamlit UI remains available for the VPS/container deployment:
 
 ```bash
-# Terminal 1 — API.  Docs: http://127.0.0.1:8000/docs
-uv run uvicorn src.api:app --host 0.0.0.0 --port 8000
-
-# Terminal 2 — Streamlit UI (calls the API via FINRAG_API_URL, default :8000)
-uv run streamlit run src/ui.py
+# From the repository root
+docker compose -f infra/compose.yaml up --build
+# Open http://localhost:8501
 ```
 
 ```bash
@@ -280,13 +287,25 @@ cannot burn the free-tier LLM/embedding quotas. A typical
 public deploy keeps the **backend on localhost** and puts the **Streamlit UI as the
 only public surface** at a subpath — the UI reaches the API server-side via
 `FINRAG_API_URL` + `FINRAG_API_TOKEN`, so the token never reaches the browser.
-Ship it however you deploy — `docker compose up` ([`Dockerfile`](Dockerfile) /
-[`compose.yaml`](compose.yaml) run both services in one container) — then put it
+Ship the VPS version with `docker compose -f infra/compose.yaml up`
+([`infra/Dockerfile`](infra/Dockerfile) /
+[`infra/compose.yaml`](infra/compose.yaml) run FastAPI and Streamlit in one container) — then put it
 behind your own reverse proxy / TLS (or your platform's built-in HTTPS).
+
+For Vercel, import this GitHub repository twice:
+
+| Vercel project | Root Directory | Configuration |
+| --- | --- | --- |
+| Backend | `backend` | FastAPI entrypoint in `backend/pyproject.toml`; function settings in `backend/vercel.json` |
+| Frontend | `frontend` | Next.js is detected automatically; set `FINRAG_API_URL` and `FINRAG_API_TOKEN` |
+
+The backend also needs its provider, Neon, QStash, and public callback
+environment variables. Vercel configuration files stay inside the service root
+that Vercel builds; `infra/` is only for repository-managed deployment assets.
 
 ## Security & MCP (Wave 6)
 
-**Guardrails.** [`src/guardrails.py`](src/guardrails.py) wraps the RAG and agent paths
+**Guardrails.** [`backend/src/guardrails.py`](backend/src/guardrails.py) wraps the RAG and agent paths
 in a defense-in-depth filter set, on by default (`GUARDRAILS_ENABLED=1`):
 
 - `screen_input` — refuse prompt-injection / jailbreak / system-prompt-extraction
@@ -303,24 +322,24 @@ in a defense-in-depth filter set, on by default (`GUARDRAILS_ENABLED=1`):
   emails / SSNs / card numbers (Luhn-checked) / phones from the text.
 
 The signatures target attack *phrasing*, not finance vocabulary, so benign filing
-questions pass untouched (false-positive-free, verified in `tests/test_wave6.py`).
+questions pass untouched (false-positive-free, verified in `backend/tests/test_wave6.py`).
 NemoGuard rates content *harm*, not injection, so it augments — never replaces — the
 signatures, and always fails open to them.
 
-**Red team.** [`eval/red_team.jsonl`](eval/red_team.jsonl) holds adversarial prompts
+**Red team.** [`backend/eval/red_team.jsonl`](backend/eval/red_team.jsonl) holds adversarial prompts
 across five classes (direct jailbreak, system-prompt extraction, citation manipulation,
 indirect injection via a planted chunk, and Chinese-language attacks). The harness runs
 each one with defenses off vs on and reports attack-success-rate before/after — success
 is detected deterministically via a canary, so the number is reproducible:
 
 ```bash
-uv run python eval/run_red_team.py        # → eval/reports/wave_6.md (+ raw run)
+uv --directory backend run python eval/run_red_team.py        # → backend/eval/reports/wave_6.md (+ raw run)
 ```
 
 Results — including which layer stops each attack — are in
-[`eval/reports/wave_6.md`](eval/reports/wave_6.md).
+[`backend/eval/reports/wave_6.md`](backend/eval/reports/wave_6.md).
 
-**Use finrag as an MCP tool.** [`src/mcp_server.py`](src/mcp_server.py) exposes finrag
+**Use finrag as an MCP tool.** [`backend/src/mcp_server.py`](backend/src/mcp_server.py) exposes finrag
 over the [Model Context Protocol](https://modelcontextprotocol.io) (official `mcp` SDK):
 `ask_filings` (cited RAG), `research_agent` (multi-step ReAct), and the Wave 4 toolset
 (`retrieve_filing`, `lookup_metric`, `compare_companies`, `web_search`, `calculator`).
@@ -330,7 +349,7 @@ Two transports, chosen with `FINRAG_MCP_TRANSPORT`:
 server as a subprocess. On the command line:
 
 ```bash
-claude mcp add finrag -- uv run python -m src.mcp_server
+claude mcp add finrag -- uv --directory backend run python -m src.mcp_server
 ```
 
 or as a config entry (`.mcp.json`, `claude_desktop_config.json`, Cursor, …):
@@ -353,7 +372,7 @@ client can reach. It runs stateless (proxy/tunnel-friendly) and requires
 reverse proxy / tunnel (TLS + the same `MCP_TOKEN`), like the web demo:
 
 ```bash
-MCP_TOKEN=your-secret FINRAG_MCP_TRANSPORT=http uv run python -m src.mcp_server
+MCP_TOKEN=your-secret FINRAG_MCP_TRANSPORT=http uv --directory backend run python -m src.mcp_server
 # → serves Streamable HTTP at http://127.0.0.1:8200/mcp
 ```
 
@@ -390,13 +409,13 @@ together with `MCP_TOKEN` (bearer auth) — defence in depth on top of your prox
 ### Verify it works
 
 ```bash
-# 1) Red team — produces ASR before/after into eval/reports/wave_6.md (+ raw run).
+# 1) Red team — produces ASR before/after into backend/eval/reports/wave_6.md (+ raw run).
 #    Blank LANGFUSE_* for batch runs (tracing isn't needed and can stall the first call).
-LANGFUSE_PUBLIC_KEY= LANGFUSE_SECRET_KEY= uv run python -u eval/run_red_team.py
+LANGFUSE_PUBLIC_KEY= LANGFUSE_SECRET_KEY= uv --directory backend run python -u eval/run_red_team.py
 #    → SUMMARY {"asr_before": ~0.29, "asr_after": ~0.07}
 
 # 2) MCP server — verify tools/list with the official inspector (needs npx).
-npx @modelcontextprotocol/inspector --cli uv run python -m src.mcp_server --method tools/list
+npx @modelcontextprotocol/inspector --cli uv --directory backend run python -m src.mcp_server --method tools/list
 #    → JSON listing 7 tools (ask_filings, research_agent + the 5 Wave 4 tools).
 #    Drop --cli/--method for the browser UI to call them interactively.
 
@@ -404,7 +423,7 @@ npx @modelcontextprotocol/inspector --cli uv run python -m src.mcp_server --meth
 #    → answered via finrag's ask_filings, with citations to the SEC filing.
 
 # 4) Guardrails — zero false positives on benign queries + attacks blocked (offline).
-uv run python -m pytest tests/test_wave6.py -q     # guardrails + MCP tests pass
+uv --directory backend run python -m pytest tests/test_wave6.py -q     # guardrails + MCP tests pass
 ```
 
 Guardrails are on by default, so `finrag ask`, `/agent`, and the MCP tools are already
@@ -420,10 +439,10 @@ fails fast (before any EDGAR/embedding work).
 
 ```bash
 # choose per run with the CLI flag:
-uv run finrag ingest --tickers AAPL --year 2024 --chunk-strategy section
+uv --directory backend run finrag ingest --tickers AAPL --year 2024 --chunk-strategy section
 
 # or set the default in .env (CHUNK_STRATEGY=section) and run normally:
-uv run finrag ingest --tickers AAPL --year 2024
+uv --directory backend run finrag ingest --tickers AAPL --year 2024
 ```
 
 | Strategy | What it does |
@@ -433,72 +452,49 @@ uv run finrag ingest --tickers AAPL --year 2024
 | `section` | Splits at 10-K structural headings (Item / Part) and prefixes each chunk with its section heading. |
 | `parent_doc` | Embeds a small child for precise retrieval, stores the larger parent block in metadata; `ask()` feeds the parent to the LLM as context. |
 
-On the AAPL 10-K eval corpus `fixed` wins — the corpus is small and number/table-dense, so finer chunking inflates the recall denominator (see [`eval/reports/wave_3a.md`](eval/reports/wave_3a.md) and [`wave_3g.md`](eval/reports/wave_3g.md)). The alternatives are kept because the best strategy is corpus-dependent; switch and re-measure on a new corpus.
+On the AAPL 10-K eval corpus `fixed` wins — the corpus is small and number/table-dense, so finer chunking inflates the recall denominator (see [`backend/eval/reports/wave_3a.md`](backend/eval/reports/wave_3a.md) and [`wave_3g.md`](backend/eval/reports/wave_3g.md)). The alternatives are kept because the best strategy is corpus-dependent; switch and re-measure on a new corpus.
 
 ### Adding a new chunking strategy
 
-The strategy name has a single source of truth (`VALID_CHUNK_STRATEGIES` in `src/ingest.py`), so adding one is a small, local change:
+The strategy name has a single source of truth (`VALID_CHUNK_STRATEGIES` in `backend/src/ingest.py`), so adding one is a small, local change:
 
-1. Write a `chunk_<name>(text, ...) -> list[str]` in `src/ingest.py` (or `-> list[(child, parent)]` if it needs parent context).
+1. Write a `chunk_<name>(text, ...) -> list[str]` in `backend/src/ingest.py` (or `-> list[(child, parent)]` if it needs parent context).
 2. Add `"<name>"` to `VALID_CHUNK_STRATEGIES` and a branch in `build_chunks()` returning `list[(content, metadata)]` — put any generation-time context (e.g. a parent block) in the `metadata` dict.
 3. If you stored `metadata["parent_text"]`, generation already uses it (`rag._context_text` prefers it); nothing else to wire.
 4. The `CHUNK_STRATEGY` env var, the `--chunk-strategy` flag, and fail-fast validation all pick the name up automatically from `VALID_CHUNK_STRATEGIES`.
-5. Add a unit test in `tests/test_wave3.py` and A/B it with an `experiments/wave3_*.py` script against `eval/run_eval.py`.
+5. Add a unit test in `backend/tests/test_wave3.py` and A/B it with an `backend/experiments/wave3_*.py` script against `backend/eval/run_eval.py`.
 
-## Layout
+## Monorepo layout
 
 ```
-src/
-  cli.py             # finrag ask / ingest entry point
-  config.py          # env-driven provider/model configuration
-  llm.py             # LLM provider dispatch (Gemini / Anthropic / OpenAI / NVIDIA)
-  embed.py           # embedding dispatch (NVIDIA primary, Gemini for Wave 3f)
-  rerank.py          # reranker dispatch (NVIDIA NeMo Retriever)
-  db.py              # Postgres connection pool + schema bootstrap
-  ingest.py          # parse → chunk (fixed / sentence-window / section / parent-doc) → embed → upsert
-  retrieve.py        # vector / FTS / hybrid (RRF) / rerank retrieval
-  query_rewrite.py   # normalize / multi-query / HyDE (Wave 3e)
-  rag.py             # retrieve → prompt → Answer (pydantic)
-  agent.py           # hand-written ReAct loop + session memory, JSONL traces (Wave 4)
-  agent_lg.py        # same loop rewritten on LangGraph (Wave 4 A/B)
-  api.py             # FastAPI: /health /ask (SSE) /agent /ingest (Wave 5A)
-  ui.py              # Streamlit single-page Q&A over /ask (Wave 5A)
-  obs.py             # fail-open Langfuse tracing + per-request token meter (Wave 5B)
-  cost.py            # token → USD estimation (Wave 5B)
-  guardrails.py      # injection / PII / output screens + NemoGuard   (Wave 6)
-  mcp_server.py      # finrag tools as an MCP server — stdio + remote HTTP (Wave 6)
-  clients/           # thin HTTP clients per provider
-    _http.py
-    anthropic.py
-    gemini.py
-    openai.py
-    nvidia.py
-    edgar.py
-  financial/         # EDGAR fetch + pydantic schemas + table extraction
-    edgar.py
-    schemas.py
-    table_extract.py # Docling table-aware extraction (Wave 3b)
-  tools/             # agent tools (Wave 4): spec + registry, and one file per concern
-    spec.py          #   Tool dataclass (shared, avoids an import cycle)
-    calculator.py    #   safe arithmetic (AST, no eval)
-    retrieve_filing.py #  semantic search over ingested filing text
-    xbrl.py          #   lookup_metric + compare_companies via SEC XBRL
-    web_search.py    #   Tavily web search (optional; needs TAVILY_API_KEY)
-prompts/             # versioned prompt files (answer_v*, react_v1)
-sql/                 # schema migrations (001_init.sql)
-data/                # raw / processed / fixtures
-eval/                # questions, agent suite, red-team set + run_red_team, metrics, reports
-experiments/         # ablation scripts
-docs/                # README assets (demo screenshots, badges)
-runs/                # agent run traces, one JSONL per run (gitignored)
-tests/               # pytest suites (incl. test_wave6: guardrails + MCP)
-Dockerfile           # one image, both services (API + Streamlit UI) (Wave 5A)
-compose.yaml         # `docker compose up` → UI on :8501; API stays internal
-deploy/entrypoint.sh # runs API + UI together inside the container
-.env.example
-pyproject.toml
-README.md
-README.zh-CN.md
+frontend/            # Next.js UI and server-only FastAPI proxy
+backend/
+  src/
+    api.py            # FastAPI routes and SSE
+    rag.py            # retrieval-augmented answer flow
+    agent.py          # hand-written ReAct loop
+    ingest.py         # filing ingestion pipeline
+    ingest_jobs.py    # durable ingest job state
+    qstash_queue.py   # QStash publish and signature verification
+    clients/          # provider clients
+    financial/        # SEC filing and XBRL support
+    tools/            # agent tools
+  prompts/           # versioned prompt files (answer_v*, react_v1)
+  sql/               # runtime schema migrations
+  data/              # raw / processed / fixtures
+  eval/              # evaluation suites, metrics, and reports
+  experiments/       # retrieval ablation scripts
+  tests/             # pytest suites
+  pyproject.toml
+  uv.lock
+  vercel.json        # backend Vercel project configuration
+infra/
+  Dockerfile
+  compose.yaml
+  entrypoint.sh
+docs/                # documentation assets
+README.md            # English documentation (kept at repository root)
+README.zh-CN.md      # Chinese documentation (kept at repository root)
 ```
 
 ## License

@@ -107,16 +107,14 @@ export function IngestPanel({
             {pending ? t.ingestPending : t.ingestSubmit}
           </button>
         </form>
-        {pending ? (
-          <p
-            className="sr-only"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {t.ingestPending}
-          </p>
-        ) : null}
+        <p
+          className="sr-only"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {pending ? t.ingestPending : ""}
+        </p>
 
         {error ? (
           <p className="error-message" role="alert" aria-live="assertive">

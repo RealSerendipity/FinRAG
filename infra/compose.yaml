@@ -5,9 +5,11 @@
 # For a public deploy, bind 8501 to localhost and put your own TLS in front.
 services:
   finrag:
-    build: .
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
     image: finrag:latest
-    env_file: .env
+    env_file: ../.env
     ports:
       - "8501:8501"
     restart: unless-stopped

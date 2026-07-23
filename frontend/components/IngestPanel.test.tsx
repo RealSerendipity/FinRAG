@@ -180,23 +180,31 @@ test("uses a collapsed native disclosure with labelled form controls", () => {
 });
 
 test("announces pending ingest work in an independent live status", () => {
-  render(
+  const props = {
+    locale: "en" as const,
+    status: null,
+    error: null,
+    canRetry: false,
+    canRetryPoll: false,
+    onSubmit: vi.fn(),
+    onRetry: vi.fn(),
+    onRetryPoll: vi.fn(),
+  };
+  const { rerender } = render(
     <IngestPanel
-      locale="en"
-      pending
-      status={null}
-      error={null}
-      canRetry={false}
-      canRetryPoll={false}
-      onSubmit={vi.fn()}
-      onRetry={vi.fn()}
-      onRetryPoll={vi.fn()}
+      {...props}
+      pending={false}
     />,
   );
 
   const panel = openPanel();
   const status = panel.getByRole("status");
-  expect(status).toHaveTextContent("Submitting filing…");
+  expect(status).toBeEmptyDOMElement();
   expect(status).toHaveAttribute("aria-live", "polite");
   expect(status).toHaveAttribute("aria-atomic", "true");
+
+  rerender(<IngestPanel {...props} pending />);
+
+  expect(panel.getByRole("status")).toBe(status);
+  expect(status).toHaveTextContent("Submitting filing…");
 });

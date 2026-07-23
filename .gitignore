@@ -9,8 +9,10 @@ build/
 *.egg-info/
 
 # Project-specific
-data/raw/
-data/processed/
+backend/data/raw/
+backend/data/processed/
+backend/runs/
+# Preserve pre-monorepo local traces without tracking them.
 runs/
 .chroma/
 *.sqlite
@@ -31,3 +33,6 @@ frontend/coverage/
 frontend/.env*
 !frontend/.env*.example
 frontend/.vercel/
+
+# Vercel backend
+backend/.vercel/

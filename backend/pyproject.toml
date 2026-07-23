@@ -2,7 +2,6 @@
 name = "finrag"
 version = "0.0.1"
 description = "RAG + agent system over SEC filings (10-K / 10-Q / earnings calls)."
-readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "anthropic>=0.39.0",

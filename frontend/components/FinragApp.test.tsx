@@ -348,7 +348,7 @@ describe("FinragApp", () => {
 
     expect(ragSignal?.aborted).toBe(true);
     expect(screen.getByRole("button", { name: "Ask" })).not.toBeDisabled();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
     act(() => {
       ragController!.enqueue(
         encoder.encode(

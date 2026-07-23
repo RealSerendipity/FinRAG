@@ -8,28 +8,27 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-WORKDIR /app
+WORKDIR /app/backend
 
 # Install dependencies first (cached layer): only the files uv needs to resolve.
-COPY pyproject.toml uv.lock README.md ./
+COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --extra full --no-install-project --no-dev
 
 # Then the application code, and install the project itself.
-COPY src ./src
-COPY prompts ./prompts
-COPY sql ./sql
-COPY deploy/entrypoint.sh ./deploy/entrypoint.sh
-RUN uv sync --frozen --extra full --no-dev && chmod +x deploy/entrypoint.sh
+COPY backend/src ./src
+COPY backend/prompts ./prompts
+COPY backend/sql ./sql
+COPY infra/entrypoint.sh /app/infra/entrypoint.sh
+RUN uv sync --frozen --extra full --no-dev && chmod +x /app/infra/entrypoint.sh
 
 # Run as a non-root user.
 RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# /app first on the import path so `import src` resolves to /app/src regardless of
-# how uv installed the project — keeps prompts/ and sql/ (read at import time via
-# Path(__file__)) pointing at /app/prompts and /app/sql.
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH=/app
+# Keep the backend project root on the import path so `import src` and the
+# adjacent prompts/ and sql/ runtime resources resolve consistently.
+ENV PATH="/app/backend/.venv/bin:$PATH" \
+    PYTHONPATH=/app/backend
 EXPOSE 8501
 
 # Agent traces (runs/<id>.jsonl) default to the repo dir; redirect to a writable
@@ -41,4 +40,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health').status==200 else 1)"
 
 # Start both services (API in background, UI in foreground) via the entrypoint.
-CMD ["bash", "deploy/entrypoint.sh"]
+CMD ["bash", "/app/infra/entrypoint.sh"]

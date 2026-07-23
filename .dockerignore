@@ -10,10 +10,11 @@ __pycache__
 .env
 .env.*
 runs
-data
-eval
-experiments
-tests
+backend/data
+backend/eval
+backend/experiments
+backend/tests
+frontend
 .idea
 .DS_Store
 **/.DS_Store
