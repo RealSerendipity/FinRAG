@@ -413,6 +413,7 @@ def api_token() -> str | None:
 
 
 def finrag_public_api_url() -> str:
+    """Return required FINRAG_PUBLIC_API_URL without trailing slashes."""
     value = _required_env_value(
         "FINRAG_PUBLIC_API_URL", _get_settings().FINRAG_PUBLIC_API_URL
     )
@@ -420,10 +421,12 @@ def finrag_public_api_url() -> str:
 
 
 def qstash_token() -> str:
+    """Return the required QSTASH_TOKEN used to publish QStash messages."""
     return _required_env_value("QSTASH_TOKEN", _get_settings().QSTASH_TOKEN)
 
 
 def qstash_signing_keys() -> tuple[str, str]:
+    """Return required QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY."""
     current = _required_env_value(
         "QSTASH_CURRENT_SIGNING_KEY", _get_settings().QSTASH_CURRENT_SIGNING_KEY
     )
