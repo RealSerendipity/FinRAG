@@ -207,7 +207,7 @@ judge a full eval run.
 ## Quick start
 
 ```bash
-uv sync --group dev
+uv sync --extra full --group dev
 cp .env.example .env
 # fill in GEMINI_API_KEY + DATABASE_URL + NVIDIA_API_KEY
 

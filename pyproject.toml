@@ -7,7 +7,6 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
     "anthropic>=0.39.0",
     "click>=8.0",
-    "docling>=2.104.0",
     "fastapi>=0.115",
     "google-genai>=0.3.0",
     "langfuse>=3.0",
@@ -21,9 +20,14 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "slowapi>=0.1.10",
     "sse-starlette>=2.1",
-    "streamlit>=1.40",
     "tiktoken>=0.7",
     "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+full = [
+    "docling>=2.104.0",
+    "streamlit>=1.40",
 ]
 
 [project.scripts]

@@ -12,14 +12,14 @@ WORKDIR /app
 
 # Install dependencies first (cached layer): only the files uv needs to resolve.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-install-project --no-dev
+RUN uv sync --frozen --extra full --no-install-project --no-dev
 
 # Then the application code, and install the project itself.
 COPY src ./src
 COPY prompts ./prompts
 COPY sql ./sql
 COPY deploy/entrypoint.sh ./deploy/entrypoint.sh
-RUN uv sync --frozen --no-dev && chmod +x deploy/entrypoint.sh
+RUN uv sync --frozen --extra full --no-dev && chmod +x deploy/entrypoint.sh
 
 # Run as a non-root user.
 RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
