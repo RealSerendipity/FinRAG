@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = ""
     EMBEDDING_DIM: int | None = Field(default=None, gt=0)
     NVIDIA_BASE_URL: str = ""
+    NVIDIA_CHAT_TIMEOUT_SECONDS: int = Field(default=60, ge=1)
+    NVIDIA_CHAT_MAX_RETRIES: int = Field(default=2, ge=0)
     DATABASE_URL: str = ""
     EDGAR_USER_AGENT: str = ""
     GEMINI_API_KEY: str | None = None
@@ -339,6 +341,14 @@ def embedding_dim() -> int:
 
 def nvidia_base_url() -> str:
     return _required_env_value("NVIDIA_BASE_URL", _get_settings().NVIDIA_BASE_URL)
+
+
+def nvidia_chat_timeout_seconds() -> int:
+    return _get_settings().NVIDIA_CHAT_TIMEOUT_SECONDS
+
+
+def nvidia_chat_max_retries() -> int:
+    return _get_settings().NVIDIA_CHAT_MAX_RETRIES
 
 
 def embedding_provider() -> str:

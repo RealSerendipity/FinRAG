@@ -7,16 +7,27 @@ import httpx
 from openai import OpenAI
 
 _client: OpenAI | None = None
-_client_key: tuple[str, str] | None = None  # (api_key, base_url)
+_client_key: tuple[str, str, int, int] | None = None
 
 
-def _get_client(api_key: str, base_url: str) -> OpenAI:
+def _get_client(
+    api_key: str,
+    base_url: str,
+    *,
+    timeout_seconds: int = 60,
+    max_retries: int = 2,
+) -> OpenAI:
     global _client, _client_key
-    key = (api_key, base_url)
+    key = (api_key, base_url, timeout_seconds, max_retries)
     if _client is None or _client_key != key:
         # Cap per-request time — the SDK default is 600s, long enough for a single
         # hung call to stall an entire eval sweep.
-        _client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=2)
+        _client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
+        )
         _client_key = key
     return _client
 
@@ -89,9 +100,16 @@ def complete(
     system: str | None,
     temperature: float,
     max_tokens: int,
+    timeout_seconds: int = 60,
+    max_retries: int = 2,
 ):
     """Call the NVIDIA NIM chat completions endpoint; return the raw SDK response."""
-    client = _get_client(api_key, base_url)
+    client = _get_client(
+        api_key,
+        base_url,
+        timeout_seconds=timeout_seconds,
+        max_retries=max_retries,
+    )
     payload = list(messages)
     if system:
         payload = [{"role": "system", "content": system}, *payload]

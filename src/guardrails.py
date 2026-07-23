@@ -239,6 +239,8 @@ def _nemoguard_unsafe(text: str) -> tuple[bool, str] | None:
             system=None,
             temperature=0.0,
             max_tokens=80,
+            timeout_seconds=config.nvidia_chat_timeout_seconds(),
+            max_retries=config.nvidia_chat_max_retries(),
         )
         raw = (resp.choices[0].message.content or "").strip()
         verdict = json.loads(raw[raw.index("{") : raw.rindex("}") + 1])

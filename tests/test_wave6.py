@@ -518,6 +518,39 @@ def test_agent_redacts_pii_in_final_answer(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # NemoGuard (live) — clean-skip without a key
 # --------------------------------------------------------------------------- #
+def test_nemoguard_uses_configured_nvidia_chat_limits(monkeypatch):
+    from src.clients import nvidia as nvidia_client
+
+    captured: dict[str, object] = {}
+
+    def fake_complete(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"User Safety": "safe", "Safety Categories": ""}'
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setenv("NEMOGUARD_ENABLED", "1")
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "NEMOGUARD_CONTENT_SAFETY_MODEL",
+        "nvidia/test-content-safety",
+    )
+    monkeypatch.setenv("NVIDIA_BASE_URL", "https://example.invalid/v1")
+    monkeypatch.setenv("NVIDIA_CHAT_TIMEOUT_SECONDS", "180")
+    monkeypatch.setenv("NVIDIA_CHAT_MAX_RETRIES", "0")
+    monkeypatch.setattr(nvidia_client, "complete", fake_complete)
+
+    assert guardrails._nemoguard_unsafe("hello") == (False, "")
+    assert captured["timeout_seconds"] == 180
+    assert captured["max_retries"] == 0
+
+
 @pytest.mark.skipif(not os.environ.get("NVIDIA_API_KEY"), reason="NVIDIA_API_KEY not set")
 def test_nemoguard_flags_unsafe_content(monkeypatch):
     monkeypatch.setenv("NEMOGUARD_ENABLED", "1")

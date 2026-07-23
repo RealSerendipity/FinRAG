@@ -214,6 +214,8 @@ def _chat_nvidia(
         messages, model,
         api_key=api_key, base_url=config.nvidia_base_url(),
         system=system, temperature=temperature, max_tokens=max_tokens,
+        timeout_seconds=config.nvidia_chat_timeout_seconds(),
+        max_retries=config.nvidia_chat_max_retries(),
     )
     choice = resp.choices[0]
     usage = {

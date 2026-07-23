@@ -8,10 +8,12 @@ any properly configured environment; the closed providers are backups.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
-from src import config
+from src import config, llm
+from src.clients import nvidia as nvidia_client
 from src.llm import LLMResponse, chat
 
 
@@ -159,3 +161,72 @@ def test_llm_model_default_requires_provider_model_list(
 
     with pytest.raises(RuntimeError, match="OPENAI_MODELS is not set"):
         config.llm_model()
+
+
+def test_nvidia_chat_uses_configured_timeout_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_complete(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=None,
+        )
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setenv("NVIDIA_BASE_URL", "https://example.invalid/v1")
+    monkeypatch.setenv("NVIDIA_CHAT_TIMEOUT_SECONDS", "180")
+    monkeypatch.setenv("NVIDIA_CHAT_MAX_RETRIES", "0")
+    monkeypatch.setattr(nvidia_client, "complete", fake_complete)
+
+    response = llm._chat_nvidia(
+        [{"role": "user", "content": "hello"}],
+        "test-model",
+        None,
+        0.0,
+        16,
+    )
+
+    assert response.text == "ok"
+    assert captured["timeout_seconds"] == 180
+    assert captured["max_retries"] == 0
+
+
+def test_nvidia_client_cache_key_includes_timeout_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[SimpleNamespace] = []
+
+    def fake_openai(**kwargs):
+        client = SimpleNamespace(**kwargs)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(nvidia_client, "OpenAI", fake_openai)
+    monkeypatch.setattr(nvidia_client, "_client", None)
+    monkeypatch.setattr(nvidia_client, "_client_key", None)
+
+    first = nvidia_client._get_client(
+        "key",
+        "https://example.invalid/v1",
+        timeout_seconds=60,
+        max_retries=2,
+    )
+    same = nvidia_client._get_client(
+        "key",
+        "https://example.invalid/v1",
+        timeout_seconds=60,
+        max_retries=2,
+    )
+    changed = nvidia_client._get_client(
+        "key",
+        "https://example.invalid/v1",
+        timeout_seconds=180,
+        max_retries=0,
+    )
+
+    assert first is same
+    assert changed is not first
+    assert len(created) == 2
