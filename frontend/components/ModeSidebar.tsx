@@ -11,6 +11,7 @@ export type ModeSidebarProps = {
   useYear: boolean;
   topK: number;
   health: HealthStatus | null;
+  pending: boolean;
   onLocaleChange: (locale: Locale) => void;
   onModeChange: (mode: FinragMode) => void;
   onTickerChange: (value: string) => void;
@@ -28,6 +29,7 @@ export function ModeSidebar({
   useYear,
   topK,
   health,
+  pending,
   onLocaleChange,
   onModeChange,
   onTickerChange,
@@ -45,6 +47,7 @@ export function ModeSidebar({
           {t.languageLabel}
           <select
             value={locale}
+            disabled={pending}
             onChange={(event) =>
               onLocaleChange(event.target.value as Locale)
             }

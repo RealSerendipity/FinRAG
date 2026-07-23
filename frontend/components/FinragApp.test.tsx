@@ -6,6 +6,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { AgentAnswer, RagAnswer } from "@/lib/types";
@@ -249,6 +250,61 @@ describe("FinragApp", () => {
     await waitFor(() => expect(askButton).not.toBeDisabled());
   });
 
+  test("aborts an old RAG request when mode changes and ignores its late result", async () => {
+    let ragController: ReadableStreamDefaultController<Uint8Array>;
+    let ragSignal: AbortSignal | undefined;
+    mockFetch((url, init) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      ragSignal = init?.signal ?? undefined;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            ragController = controller;
+          },
+        }),
+      );
+    });
+    render(<FinragApp />);
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Agent" }));
+
+    expect(ragSignal?.aborted).toBe(true);
+    expect(screen.getByRole("button", { name: "Ask" })).not.toBeDisabled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    act(() => {
+      ragController!.enqueue(
+        encoder.encode(
+          `event: answer\ndata: ${JSON.stringify(ragAnswer)}\n\nevent: done\ndata: {}\n\n`,
+        ),
+      );
+      ragController!.close();
+    });
+    await act(async () => {});
+    expect(screen.queryByText(ragAnswer.text)).not.toBeInTheDocument();
+    expect(screen.queryByText("Complete")).not.toBeInTheDocument();
+  });
+
+  test("requires a done event before committing a RAG answer", async () => {
+    mockFetch((url) =>
+      url === "/api/health"
+        ? healthResponse()
+        : sseResponse([["answer", ragAnswer]]),
+    );
+    render(<FinragApp />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The server returned an invalid response.",
+    );
+    expect(screen.queryByText(ragAnswer.text)).not.toBeInTheDocument();
+    expect(screen.queryByText("Complete")).not.toBeInTheDocument();
+  });
+
   test("posts Agent questions and renders its JSON result", async () => {
     let agentInit: RequestInit | undefined;
     mockFetch((url, init) => {
@@ -340,21 +396,88 @@ describe("FinragApp", () => {
     );
   });
 
-  test("loads health only once and aborts it on unmount", async () => {
-    let healthSignal: AbortSignal | undefined;
-    const fetchMock = mockFetch((url, init) => {
+  test("disables locale changes while a request is pending", () => {
+    mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      return new Promise<Response>(() => {});
+    });
+    render(<FinragApp />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+    expect(screen.getByLabelText("Language")).toBeDisabled();
+  });
+
+  test("relocalizes completed local status without changing model text", async () => {
+    mockFetch((url) =>
+      url === "/api/health"
+        ? healthResponse()
+        : sseResponse([
+            ["answer", ragAnswer],
+            ["done", {}],
+          ]),
+    );
+    render(<FinragApp />);
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(await screen.findByText("Complete")).toBeInTheDocument();
+    expect(screen.getByText(ragAnswer.text)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Language"), {
+      target: { value: "zh" },
+    });
+
+    expect(screen.getByText("已完成")).toBeInTheDocument();
+    expect(screen.getByText(ragAnswer.text)).toBeInTheDocument();
+  });
+
+  test("relocalizes client validation errors after a locale change", () => {
+    render(<FinragApp />);
+    fireEvent.change(screen.getByLabelText("Question"), {
+      target: { value: " " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a question.");
+
+    fireEvent.change(screen.getByLabelText("Language"), {
+      target: { value: "zh" },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("请输入问题。");
+  });
+
+  test("shares one health request across StrictMode effect replay", async () => {
+    const fetchMock = mockFetch((url) => {
       if (url !== "/api/health") {
         throw new Error(`Unexpected request: ${url}`);
       }
-      healthSignal = init?.signal ?? undefined;
-      return new Promise<Response>(() => {});
+      return healthResponse();
     });
-    const { rerender, unmount } = render(<FinragApp />);
-    rerender(<FinragApp />);
+    render(
+      <StrictMode>
+        <FinragApp />
+      </StrictMode>,
+    );
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(healthSignal?.aborted).toBe(false);
+    expect(await screen.findByText(/Health: ok/)).toBeInTheDocument();
+  });
+
+  test("aborts an active question request on unmount", async () => {
+    let requestSignal: AbortSignal | undefined;
+    mockFetch((url, init) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      requestSignal = init?.signal ?? undefined;
+      return new Promise<Response>(() => {});
+    });
+    const { unmount } = render(<FinragApp />);
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(requestSignal?.aborted).toBe(false);
+
     unmount();
-    expect(healthSignal?.aborted).toBe(true);
+    expect(requestSignal?.aborted).toBe(true);
   });
 });
