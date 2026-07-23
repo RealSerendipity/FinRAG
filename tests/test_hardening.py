@@ -15,6 +15,12 @@ import pytest
 from src import db
 
 
+@pytest.fixture(autouse=True)
+def _disable_api_token(monkeypatch):
+    """Keep API tests isolated from a developer's local `.env` credentials."""
+    monkeypatch.delenv("API_TOKEN", raising=False)
+
+
 # --------------------------------------------------------------------------- #
 # db._configure — session setup applied to every pooled connection
 # --------------------------------------------------------------------------- #
@@ -648,22 +654,39 @@ def test_ask_sse_domain_error_has_stable_code(monkeypatch):
     assert "invalid_request" in resp.text
 
 
-def test_ingest_job_sanitizes_unexpected_errors(monkeypatch):
+def test_ingest_worker_sanitizes_unexpected_errors(monkeypatch):
     from fastapi.testclient import TestClient
 
     from src import api
 
-    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    monkeypatch.setattr(api.qstash_queue, "verify", lambda **kwargs: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "claim",
+        lambda item_id: {
+            "id": item_id,
+            "ticker": "AAPL",
+            "form_type": "10-K",
+            "year": 2024,
+            "period": None,
+            "claim_token": "claim-1",
+        },
+    )
 
     def _boom(ticker, **k):
         raise RuntimeError("dsn=postgresql://u:sekret@host/db")
 
     monkeypatch.setattr(api, "run_ingest", _boom)
+    monkeypatch.setattr(api.ingest_jobs, "mark_retrying", lambda *a, **k: True)
     client = TestClient(api.app)
-    job_id = client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024}).json()["job_id"]
-    err = client.get(f"/ingest/{job_id}").json()["results"][0]["error"]
-    assert "sekret" not in err
-    assert "RuntimeError" not in err
+    response = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers={"Upstash-Signature": "signed"},
+    )
+    assert response.status_code == 503
+    assert "sekret" not in response.text
+    assert "RuntimeError" not in response.text
 
 
 # --------------------------------------------------------------------------- #

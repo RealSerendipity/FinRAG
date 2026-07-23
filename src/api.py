@@ -5,8 +5,10 @@ Endpoints
 - GET  /health          — liveness + whether Langfuse tracing is active
 - POST /ask             — RAG question, streamed as Server-Sent Events
 - POST /agent           — multi-step ReAct agent, returns the final answer + steps
-- POST /ingest          — accept an ingest job (202 + job_id; work runs in background)
+- POST /ingest          — persist and enqueue an ingest batch (202 + job_id)
 - GET  /ingest/{job_id} — poll an ingest job's status/results
+- POST /internal/ingest/run     — run one signed QStash delivery
+- POST /internal/ingest/failure — record final QStash delivery failure
 
 Each request is wrapped in one Langfuse trace and a token meter (Wave 5B), so the
 response carries per-request latency, token usage, estimated USD cost, and a link
@@ -20,22 +22,23 @@ path prefix behind a proxy. Both default off, so local dev and tests are unchang
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 import logging
-import threading
 import time
-import uuid
+from functools import partial
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
-from pydantic import BaseModel, Field, model_validator
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import run_in_threadpool
 
-from src import config, cost, obs
+from src import config, cost, ingest_jobs, obs, qstash_queue
 from src.agent import run_agent
 from src.db import bootstrap
 from src.ingest import ingest as run_ingest
@@ -60,8 +63,8 @@ _SSE_PING_SECONDS = 15
 
 # Per-route rate limits (enforced only when RATE_LIMIT_ENABLED is set). Sized to
 # the cost of each route: /agent runs up to 20 LLM calls, /ingest fetches EDGAR
-# and embeds thousands of chunks. GET /ingest/{job_id} stays unlimited (cheap
-# in-memory poll used every few seconds while a job runs).
+# and embeds thousands of chunks. GET /ingest/{job_id} stays unlimited because
+# it is a cheap Neon status poll used every few seconds while a job runs.
 _RATE_ASK = "10/minute"
 _RATE_AGENT = "3/minute"
 _RATE_INGEST = "2/hour"
@@ -136,6 +139,20 @@ class IngestRequest(BaseModel):
         return self
 
 
+class IngestWorkerRequest(BaseModel):
+    """Identify one persisted ingest item delivered by QStash."""
+
+    item_id: str = Field(min_length=1, max_length=64)
+
+
+class QStashFailureRequest(BaseModel):
+    """Represent the fields needed from a QStash failure callback."""
+
+    source_body: str = Field(alias="sourceBody")
+    retried: int
+    max_retries: int = Field(alias="maxRetries")
+
+
 def _period_of(req: AskRequest) -> str | None:
     """Explicit --period wins; otherwise derive a year filter."""
     if req.period:
@@ -199,53 +216,9 @@ def _agent_sync(req: AgentRequest) -> dict:
     }
 
 
-def _ingest_sync(req: IngestRequest) -> dict:
-    bootstrap()
-    results: list[dict] = []
-    for ticker in req.tickers:
-        t0 = time.monotonic()
-        try:
-            chunks = run_ingest(
-                ticker, form_type=req.form_type, period=req.period, fiscal_year=req.year
-            )
-            results.append({"ticker": ticker, "chunks": chunks,
-                            "elapsed_s": round(time.monotonic() - t0, 1)})
-        except ValueError as exc:
-            # Domain errors (no filing found, bad period) carry intentional,
-            # client-safe messages; report per-ticker, don't fail the batch.
-            results.append({"ticker": ticker, "error": str(exc),
-                            "elapsed_s": round(time.monotonic() - t0, 1)})
-        except Exception:  # noqa: BLE001 — unexpected details stay in server logs
-            logger.exception("ingest failed for %s", ticker)
-            results.append({"ticker": ticker, "error": _INTERNAL_ERROR,
-                            "elapsed_s": round(time.monotonic() - t0, 1)})
-    return {"results": results}
-
-
-# In-memory ingest job registry. An ingest runs minutes (EDGAR fetch + embedding),
-# far past proxy timeouts (Cloudflare cuts at ~100 s), so POST /ingest accepts the
-# job and returns immediately; clients poll GET /ingest/{job_id}. Job state lives
-# in-process — adequate for the single-instance demo deployment.
-_jobs: dict[str, dict] = {}
-_jobs_lock = threading.Lock()
-
-
 # Generic client-facing message for unexpected failures. Raw exception strings
 # can leak DSNs / internal paths, so they go to the server log only.
 _INTERNAL_ERROR = "internal error — see server logs"
-
-
-def _run_ingest_job(job_id: str, req: IngestRequest) -> None:
-    with _jobs_lock:
-        _jobs[job_id]["status"] = "running"
-    try:
-        outcome = _ingest_sync(req)
-        with _jobs_lock:
-            _jobs[job_id].update(status="done", **outcome)
-    except Exception:  # noqa: BLE001 — a failed job must be reportable, not lost
-        logger.exception("ingest job %s failed", job_id)
-        with _jobs_lock:
-            _jobs[job_id].update(status="error", error=_INTERNAL_ERROR)
 
 
 # --------------------------------------------------------------------------- #
@@ -290,19 +263,197 @@ async def agent(request: Request, req: AgentRequest) -> dict:
 
 @app.post("/ingest", status_code=202, dependencies=[Depends(require_token)])
 @limiter.limit(_RATE_INGEST)
-async def ingest(request: Request, req: IngestRequest, background: BackgroundTasks) -> dict:
-    """Accept an ingest job and return 202 immediately; poll GET /ingest/{job_id}."""
-    job_id = uuid.uuid4().hex[:12]
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "tickers": [t.upper() for t in req.tickers]}
-    background.add_task(_run_ingest_job, job_id, req)
-    return {"job_id": job_id, "status": "queued", "poll": f"/ingest/{job_id}"}
+async def ingest(request: Request, req: IngestRequest) -> dict:
+    """Persist and enqueue an ingest batch, returning its polling location."""
+    await run_in_threadpool(bootstrap)
+    batch_id, item_ids = await run_in_threadpool(
+        partial(
+            ingest_jobs.create_batch,
+            [ticker.upper() for ticker in req.tickers],
+            form_type=req.form_type,
+            year=req.year,
+            period=req.period,
+        )
+    )
+    publish_failed = False
+    for item_id in item_ids:
+        try:
+            message_id = await run_in_threadpool(
+                qstash_queue.publish_ingest_item, item_id
+            )
+        except Exception:  # noqa: BLE001 — queue failures are recorded per item
+            publish_failed = True
+            logger.exception("failed to publish ingest item %s", item_id)
+            try:
+                await run_in_threadpool(
+                    partial(
+                        ingest_jobs.mark_error,
+                        item_id,
+                        code="queue_publish_failed",
+                        message="unable to queue ingest job",
+                    )
+                )
+            except Exception:  # noqa: BLE001 — continue publishing the batch
+                logger.exception("failed to record publish error for item %s", item_id)
+            continue
+
+        try:
+            recorded = await run_in_threadpool(
+                ingest_jobs.record_message, item_id, message_id
+            )
+            if not recorded:
+                logger.warning(
+                    "failed to record QStash message id for item %s", item_id
+                )
+        except Exception:  # noqa: BLE001 — the QStash message is already durable
+            logger.exception(
+                "failed to record QStash message id for item %s", item_id
+            )
+
+    if publish_failed:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "queue_publish_failed",
+                "error": "unable to queue one or more ingest jobs",
+                "job_id": batch_id,
+            },
+        )
+    return {
+        "job_id": batch_id,
+        "status": "queued",
+        "poll": f"/ingest/{batch_id}",
+    }
 
 
 @app.get("/ingest/{job_id}", dependencies=[Depends(require_token)])
 async def ingest_status(job_id: str) -> dict:
-    with _jobs_lock:
-        job = _jobs.get(job_id)
+    """Return the persisted aggregate state for an ingest batch."""
+    job = await run_in_threadpool(ingest_jobs.get_batch, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="unknown ingest job")
-    return {"job_id": job_id, **job}
+    return job
+
+
+async def _verified_qstash_body(request: Request) -> bytes:
+    """Return the raw request body after verifying its QStash signature."""
+    raw_body = await request.body()
+    signature = request.headers.get("Upstash-Signature", "")
+    if not signature:
+        raise HTTPException(status_code=401, detail="missing QStash signature")
+    try:
+        qstash_queue.verify(
+            body=raw_body,
+            signature=signature,
+            url=str(request.url),
+        )
+    except Exception as exc:  # noqa: BLE001 — verifier errors share one safe response
+        logger.exception("QStash signature verification failed")
+        raise HTTPException(
+            status_code=401, detail="invalid QStash signature"
+        ) from exc
+    return raw_body
+
+
+async def _response_after_rejected_transition(item_id: str) -> dict:
+    """Return an idempotent response for terminal state, otherwise request retry."""
+    existing = await run_in_threadpool(ingest_jobs.get_item, item_id)
+    if existing and existing["status"] in ingest_jobs.TERMINAL_STATUSES:
+        return {"status": "already_processed"}
+    raise HTTPException(status_code=503, detail="ingest item is active")
+
+
+@app.post("/internal/ingest/run")
+async def run_ingest_item(request: Request) -> dict:
+    """Run one signed QStash ingest delivery with token-fenced transitions."""
+    raw_body = await _verified_qstash_body(request)
+    try:
+        payload = IngestWorkerRequest.model_validate_json(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="invalid ingest item") from exc
+
+    item = await run_in_threadpool(ingest_jobs.claim, payload.item_id)
+    if item is None:
+        return await _response_after_rejected_transition(payload.item_id)
+
+    claim_token = item["claim_token"]
+    started = time.monotonic()
+    try:
+        chunks = await run_in_threadpool(
+            partial(
+                run_ingest,
+                item["ticker"],
+                form_type=item["form_type"],
+                period=item["period"],
+                fiscal_year=item["year"],
+            )
+        )
+    except ValueError as exc:
+        elapsed = round(time.monotonic() - started, 1)
+        accepted = await run_in_threadpool(
+            partial(
+                ingest_jobs.mark_error,
+                payload.item_id,
+                code="invalid_request",
+                message=str(exc),
+                elapsed_s=elapsed,
+                claim_token=claim_token,
+            )
+        )
+        if not accepted:
+            return await _response_after_rejected_transition(payload.item_id)
+        return {"status": "error"}
+    except Exception as exc:  # noqa: BLE001 — unexpected details stay server-side
+        elapsed = round(time.monotonic() - started, 1)
+        logger.exception("ingest item %s failed transiently", payload.item_id)
+        accepted = await run_in_threadpool(
+            partial(
+                ingest_jobs.mark_retrying,
+                payload.item_id,
+                claim_token=claim_token,
+                elapsed_s=elapsed,
+            )
+        )
+        if not accepted:
+            return await _response_after_rejected_transition(payload.item_id)
+        raise HTTPException(status_code=503, detail=_INTERNAL_ERROR) from exc
+
+    elapsed = round(time.monotonic() - started, 1)
+    accepted = await run_in_threadpool(
+        partial(
+            ingest_jobs.mark_done,
+            payload.item_id,
+            claim_token=claim_token,
+            chunks=chunks,
+            elapsed_s=elapsed,
+        )
+    )
+    if not accepted:
+        return await _response_after_rejected_transition(payload.item_id)
+    return {"status": "done", "chunks": chunks}
+
+
+@app.post("/internal/ingest/failure")
+async def ingest_delivery_failure(request: Request) -> dict:
+    """Record final QStash delivery failure without overwriting completed work."""
+    raw_body = await _verified_qstash_body(request)
+    try:
+        callback = QStashFailureRequest.model_validate_json(raw_body)
+        source_body = base64.b64decode(callback.source_body, validate=True)
+        payload = IngestWorkerRequest.model_validate_json(source_body)
+    except (binascii.Error, ValidationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422, detail="invalid QStash failure callback"
+        ) from exc
+
+    accepted = await run_in_threadpool(
+        partial(
+            ingest_jobs.mark_error,
+            payload.item_id,
+            code="delivery_failed",
+            message="ingest delivery failed after retries",
+        )
+    )
+    if not accepted:
+        return await _response_after_rejected_transition(payload.item_id)
+    return {"status": "error"}

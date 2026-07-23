@@ -6,10 +6,20 @@ without hitting the DB or an LLM (network-free, no key needed).
 
 from __future__ import annotations
 
+import base64
+import json
+
+import pytest
 from fastapi.testclient import TestClient
 
 from src import api, cost, obs
 from src.financial.schemas import Answer, Citation
+
+
+@pytest.fixture(autouse=True)
+def _disable_api_token(monkeypatch):
+    """Keep API tests isolated from a developer's local `.env` credentials."""
+    monkeypatch.delenv("API_TOKEN", raising=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,39 +130,411 @@ def test_ingest_requires_year_or_period():
     assert resp.status_code == 422
 
 
-def test_ingest_returns_202_with_pollable_job(monkeypatch):
-    # Ingest runs minutes (EDGAR fetch + embedding); a synchronous response dies
-    # at proxy timeouts. The route must accept, return a job id, and expose status.
-    monkeypatch.setattr(api, "run_ingest", lambda ticker, **k: 42)
-    resp = client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024})
+def test_ingest_returns_persisted_job_and_publishes_each_item(monkeypatch):
+    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    created = []
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "create_batch",
+        lambda *args, **kwargs: (
+            created.append((args, kwargs)) or ("batch-1", ["item-1", "item-2"])
+        ),
+    )
+    published = []
+    monkeypatch.setattr(
+        api.qstash_queue,
+        "publish_ingest_item",
+        lambda item_id: published.append(item_id) or f"msg-{item_id}",
+    )
+    recorded = []
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "record_message",
+        lambda item_id, message_id: recorded.append((item_id, message_id)) or True,
+    )
+
+    resp = client.post(
+        "/ingest",
+        json={"tickers": ["aapl", "msft"], "year": 2024},
+    )
+
     assert resp.status_code == 202
-    job_id = resp.json()["job_id"]
-    status = client.get(f"/ingest/{job_id}")
-    assert status.status_code == 200
-    body = status.json()
-    assert body["status"] == "done"
-    assert body["results"][0] == {
+    assert resp.json() == {
+        "job_id": "batch-1",
+        "status": "queued",
+        "poll": "/ingest/batch-1",
+    }
+    assert created[0][0] == (["AAPL", "MSFT"],)
+    assert published == ["item-1", "item-2"]
+    assert recorded == [
+        ("item-1", "msg-item-1"),
+        ("item-2", "msg-item-2"),
+    ]
+
+
+def test_ingest_publish_failure_marks_item_and_continues(monkeypatch):
+    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "create_batch",
+        lambda *a, **k: ("batch-1", ["item-1", "item-2"]),
+    )
+    published = []
+
+    def _publish(item_id):
+        published.append(item_id)
+        if item_id == "item-1":
+            raise RuntimeError("queue unavailable")
+        return "msg-2"
+
+    monkeypatch.setattr(api.qstash_queue, "publish_ingest_item", _publish)
+    marked = []
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "mark_error",
+        lambda item_id, **kwargs: marked.append((item_id, kwargs)) or True,
+    )
+    monkeypatch.setattr(api.ingest_jobs, "record_message", lambda *a: True)
+
+    resp = client.post(
+        "/ingest",
+        json={"tickers": ["AAPL", "MSFT"], "year": 2024},
+    )
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["job_id"] == "batch-1"
+    assert published == ["item-1", "item-2"]
+    assert marked == [
+        (
+            "item-1",
+            {
+                "code": "queue_publish_failed",
+                "message": "unable to queue ingest job",
+            },
+        )
+    ]
+
+
+def test_ingest_record_message_false_or_exception_does_not_fail_submit(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "create_batch",
+        lambda *a, **k: ("batch-1", ["item-1", "item-2"]),
+    )
+    monkeypatch.setattr(
+        api.qstash_queue,
+        "publish_ingest_item",
+        lambda item_id: f"msg-{item_id}",
+    )
+    calls = []
+
+    def _record(item_id, message_id):
+        calls.append((item_id, message_id))
+        if item_id == "item-1":
+            return False
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(api.ingest_jobs, "record_message", _record)
+
+    resp = client.post(
+        "/ingest",
+        json={"tickers": ["AAPL", "MSFT"], "year": 2024},
+    )
+
+    assert resp.status_code == 202
+    assert calls == [
+        ("item-1", "msg-item-1"),
+        ("item-2", "msg-item-2"),
+    ]
+    assert caplog.text.count("failed to record QStash message id") == 2
+
+
+def test_ingest_status_reads_persisted_batch(monkeypatch):
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "get_batch",
+        lambda job_id: {
+            "job_id": job_id,
+            "status": "done",
+            "items": [
+                {"id": "item-1", "ticker": "AAPL", "status": "done", "attempts": 1}
+            ],
+            "results": [{"ticker": "AAPL", "chunks": 42, "elapsed_s": 3.2}],
+        },
+    )
+
+    resp = client.get("/ingest/batch-1")
+
+    assert resp.status_code == 200
+    assert resp.json()["results"][0]["chunks"] == 42
+
+
+def test_ingest_status_unknown_job_is_404(monkeypatch):
+    monkeypatch.setattr(api.ingest_jobs, "get_batch", lambda job_id: None)
+    assert client.get("/ingest/missing").status_code == 404
+
+
+def _signed_headers():
+    return {"Upstash-Signature": "signed"}
+
+
+def _accept_signature(monkeypatch):
+    monkeypatch.setattr(api.qstash_queue, "verify", lambda **kwargs: None)
+
+
+def test_ingest_worker_rejects_missing_signature():
+    resp = client.post("/internal/ingest/run", json={"item_id": "item-1"})
+    assert resp.status_code == 401
+
+
+def test_ingest_worker_rejects_invalid_signature(monkeypatch):
+    def _reject(**kwargs):
+        raise ValueError("bad signature detail")
+
+    monkeypatch.setattr(api.qstash_queue, "verify", _reject)
+    resp = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "invalid QStash signature"}
+
+
+def test_ingest_worker_verifies_raw_body_and_exact_url(monkeypatch):
+    verified = []
+    monkeypatch.setattr(
+        api.qstash_queue,
+        "verify",
+        lambda **kwargs: verified.append(kwargs),
+    )
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "get_item",
+        lambda item_id: {"id": item_id, "status": "done"},
+    )
+    raw_body = b'{"item_id":"item-1"}'
+
+    resp = client.post(
+        "/internal/ingest/run",
+        content=raw_body,
+        headers={**_signed_headers(), "Content-Type": "application/json"},
+    )
+
+    assert resp.status_code == 200
+    assert verified == [
+        {
+            "body": raw_body,
+            "signature": "signed",
+            "url": "http://testserver/internal/ingest/run",
+        }
+    ]
+
+
+@pytest.mark.parametrize("status", ["done", "error"])
+def test_ingest_worker_is_idempotent_when_item_is_terminal(monkeypatch, status):
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "get_item",
+        lambda item_id: {"id": item_id, "status": status},
+    )
+
+    resp = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "already_processed"}
+
+
+def test_ingest_worker_retries_when_item_is_active_or_missing(monkeypatch):
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "get_item",
+        lambda item_id: {"id": item_id, "status": "running"},
+    )
+    active = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+    monkeypatch.setattr(api.ingest_jobs, "get_item", lambda item_id: None)
+    missing = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+
+    assert active.status_code == 503
+    assert missing.status_code == 503
+
+
+def _claimed_item():
+    return {
+        "id": "item-1",
         "ticker": "AAPL",
-        "chunks": 42,
-        "elapsed_s": body["results"][0]["elapsed_s"],
+        "form_type": "10-K",
+        "year": 2024,
+        "period": None,
+        "claim_token": "claim-1",
     }
 
 
-def test_ingest_job_records_per_ticker_errors(monkeypatch):
-    def _boom(ticker, **k):
-        raise ValueError("no filing found")
+def test_ingest_worker_marks_domain_error_with_claim_token(monkeypatch):
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: _claimed_item())
+    monkeypatch.setattr(
+        api,
+        "run_ingest",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("no filing")),
+    )
+    errors = []
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "mark_error",
+        lambda item_id, **kwargs: errors.append((item_id, kwargs)) or True,
+    )
 
-    monkeypatch.setattr(api, "run_ingest", _boom)
-    resp = client.post("/ingest", json={"tickers": ["ZZZZ"], "year": 2024})
-    job_id = resp.json()["job_id"]
-    body = client.get(f"/ingest/{job_id}").json()
-    assert body["status"] == "done"
-    # Domain ValueErrors carry intentional, safe messages (no exception type noise).
-    assert "no filing found" in body["results"][0]["error"]
+    resp = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "error"}
+    assert errors[0][1]["code"] == "invalid_request"
+    assert errors[0][1]["claim_token"] == "claim-1"
 
 
-def test_ingest_unknown_job_is_404():
-    assert client.get("/ingest/nonexistent").status_code == 404
+def test_ingest_worker_marks_transient_failure_retrying_with_claim_token(monkeypatch):
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: _claimed_item())
+    monkeypatch.setattr(
+        api,
+        "run_ingest",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("temporary")),
+    )
+    retries = []
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "mark_retrying",
+        lambda item_id, **kwargs: retries.append((item_id, kwargs)) or True,
+    )
+
+    resp = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+
+    assert resp.status_code == 503
+    assert retries[0][1]["claim_token"] == "claim-1"
+
+
+def test_ingest_worker_marks_success_done_with_claim_token(monkeypatch):
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: _claimed_item())
+    monkeypatch.setattr(api, "run_ingest", lambda *a, **k: 42)
+    completed = []
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "mark_done",
+        lambda item_id, **kwargs: completed.append((item_id, kwargs)) or True,
+    )
+
+    resp = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "done", "chunks": 42}
+    assert completed[0][1]["claim_token"] == "claim-1"
+
+
+def test_ingest_worker_does_not_report_rejected_transition_as_success(monkeypatch):
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: _claimed_item())
+    monkeypatch.setattr(api, "run_ingest", lambda *a, **k: 42)
+    monkeypatch.setattr(api.ingest_jobs, "mark_done", lambda *a, **k: False)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "get_item",
+        lambda item_id: {"id": item_id, "status": "running"},
+    )
+
+    resp = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+
+    assert resp.status_code == 503
+
+
+def test_ingest_failure_callback_marks_item_error_without_claim_token(monkeypatch):
+    _accept_signature(monkeypatch)
+    errors = []
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "mark_error",
+        lambda item_id, **kwargs: errors.append((item_id, kwargs)) or True,
+    )
+    source = base64.b64encode(json.dumps({"item_id": "item-1"}).encode()).decode()
+
+    resp = client.post(
+        "/internal/ingest/failure",
+        json={"sourceBody": source, "retried": 3, "maxRetries": 3},
+        headers=_signed_headers(),
+    )
+
+    assert resp.status_code == 200
+    assert errors[0][0] == "item-1"
+    assert errors[0][1]["code"] == "delivery_failed"
+    assert errors[0][1].get("claim_token") is None
+
+
+def test_ingest_failure_callback_rejects_malformed_source_body(monkeypatch):
+    _accept_signature(monkeypatch)
+    resp = client.post(
+        "/internal/ingest/failure",
+        json={"sourceBody": "not-base64!", "retried": 3, "maxRetries": 3},
+        headers=_signed_headers(),
+    )
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": "invalid QStash failure callback"}
+
+
+def test_ingest_failure_callback_does_not_report_done_item_as_error(monkeypatch):
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "mark_error", lambda *a, **k: False)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "get_item",
+        lambda item_id: {"id": item_id, "status": "done"},
+    )
+    source = base64.b64encode(json.dumps({"item_id": "item-1"}).encode()).decode()
+
+    resp = client.post(
+        "/internal/ingest/failure",
+        json={"sourceBody": source, "retried": 3, "maxRetries": 3},
+        headers=_signed_headers(),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "already_processed"}
 
 
 def test_ask_sse_ping_is_configured():
@@ -196,7 +578,14 @@ def test_token_gate(monkeypatch):
 
 def test_token_gate_disabled_by_default(monkeypatch):
     # With API_TOKEN unset, protected routes need no Authorization header.
-    monkeypatch.setattr(api, "run_ingest", lambda ticker, **k: 1)
+    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "create_batch",
+        lambda *a, **k: ("batch-1", ["item-1"]),
+    )
+    monkeypatch.setattr(api.qstash_queue, "publish_ingest_item", lambda item_id: "msg-1")
+    monkeypatch.setattr(api.ingest_jobs, "record_message", lambda *a: True)
     resp = client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024})
     assert resp.status_code == 202
 
