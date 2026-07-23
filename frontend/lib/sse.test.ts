@@ -1,6 +1,21 @@
 import { describe, expect, test } from "vitest";
 
 import { parseSse } from "./sse";
+import type { AgentAnswer, ApiError } from "./types";
+
+const rateLimitError = { error: "Rate limit exceeded" } satisfies ApiError;
+const stoppedStates = [
+  "final_answer",
+  "max_steps",
+  "blocked",
+  "blocked_output",
+] as const satisfies readonly AgentAnswer["stopped"][];
+// @ts-expect-error The backend does not emit arbitrary stop reasons.
+const invalidStoppedState: AgentAnswer["stopped"] = "unexpected";
+
+void rateLimitError;
+void stoppedStates;
+void invalidStoppedState;
 
 function streamFromChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -68,6 +83,19 @@ describe("parseSse", () => {
     expect(events).toEqual([{ event: "answer", data: "收入增长📈" }]);
   });
 
+  test("ignores a UTF-8 BOM split across transport chunks", async () => {
+    const encoded = new TextEncoder().encode("\uFEFFevent: answer\ndata: ok\n\n");
+    const events = await collect(
+      streamFromChunks([
+        encoded.slice(0, 1),
+        encoded.slice(1, 2),
+        encoded.slice(2),
+      ]),
+    );
+
+    expect(events).toEqual([{ event: "answer", data: "ok" }]);
+  });
+
   test("ignores heartbeat comments and comment-only events", async () => {
     const encoder = new TextEncoder();
     const events = await collect(
@@ -94,15 +122,13 @@ describe("parseSse", () => {
     ]);
   });
 
-  test("flushes a final data event without a trailing blank line", async () => {
+  test("discards a final data event without a trailing blank line", async () => {
     const encoder = new TextEncoder();
     const events = await collect(
       streamFromChunks([encoder.encode("event: error\ndata: transport failed")]),
     );
 
-    expect(events).toEqual([
-      { event: "error", data: "transport failed" },
-    ]);
+    expect(events).toEqual([]);
   });
 
   test("ends normally without inventing an answer when the stream closes early", async () => {

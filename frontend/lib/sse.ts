@@ -95,14 +95,9 @@ export async function* parseSse(
 
     buffer = buffer.slice(offset);
     if (flush) {
-      if (buffer.length > 0) {
-        consumeLine(buffer, state);
-        buffer = "";
-      }
-      const event = dispatch(state);
-      if (event) {
-        events.push(event);
-      }
+      // The event stream format dispatches only on an empty line. At EOF,
+      // discard any event that was not terminated by that delimiter.
+      buffer = "";
     }
     return events;
   }

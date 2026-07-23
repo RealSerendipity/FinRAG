@@ -58,7 +58,7 @@ export interface AgentAnswer {
   answer: string;
   steps: AgentStep[];
   tools_used: string[];
-  stopped: string;
+  stopped: "final_answer" | "max_steps" | "blocked" | "blocked_output";
   usage: TokenUsage;
   cost_usd: number;
   cost_estimated: boolean;
@@ -146,7 +146,7 @@ export interface StructuredApiError {
 
 /** Error JSON emitted by SSE handlers or standard FastAPI responses. */
 export type ApiError =
-  | { code: string; error: string }
+  | { error: string; code?: string }
   | { detail: string }
   | { detail: StructuredApiError }
   | { detail: ValidationErrorDetail[] };
