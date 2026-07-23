@@ -801,7 +801,7 @@ describe("FinragApp", () => {
     expect(screen.getByText("Done")).toBeInTheDocument();
     expect(polls).toBe(6);
     expect(
-      screen.queryByRole("button", { name: "Retrying status check…" }),
+      screen.queryByRole("button", { name: "Retry status check" }),
     ).not.toBeInTheDocument();
   });
 
@@ -852,7 +852,7 @@ describe("FinragApp", () => {
     });
 
     const retryPoll = screen.getByRole("button", {
-      name: "Retrying status check…",
+      name: "Retry status check",
     });
     await act(async () => {
       fireEvent.click(retryPoll);
@@ -889,6 +889,51 @@ describe("FinragApp", () => {
       "The server returned an invalid response.",
     );
 
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).startsWith("/api/ingest/"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("rejects an unsafe job id in a retryable submission error", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    );
+    const fetchMock = mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      if (url === "/api/ingest") {
+        return Response.json(
+          {
+            detail: {
+              code: "queue_unavailable",
+              error: "Queue unavailable",
+              retryable: true,
+              job_id: "../health",
+            },
+          },
+          { status: 503 },
+        );
+      }
+      throw new Error(`Unsafe poll request: ${url}`);
+    });
+    render(<FinragApp />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The server returned an invalid response.",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Retry submission" }),
+    ).not.toBeInTheDocument();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });

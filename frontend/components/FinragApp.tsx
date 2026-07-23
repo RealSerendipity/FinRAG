@@ -440,6 +440,16 @@ export function FinragApp() {
           if (!isCurrent()) {
             return;
           }
+          if (
+            "job_id" in detail &&
+            (typeof detail.job_id !== "string" ||
+              !INGEST_JOB_ID.test(detail.job_id))
+          ) {
+            throw new UiRequestError({
+              kind: "copy",
+              key: "validationInvalidResponse",
+            });
+          }
           const jobId =
             typeof detail.job_id === "string" ? detail.job_id : null;
           if (jobId) {

@@ -126,7 +126,7 @@ test("offers a separate status-check retry action", () => {
   );
 
   fireEvent.click(
-    screen.getByRole("button", { name: "Retrying status check…" }),
+    screen.getByRole("button", { name: "Retry status check" }),
   );
 
   expect(onRetryPoll).toHaveBeenCalledOnce();
