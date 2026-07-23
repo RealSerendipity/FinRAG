@@ -28,6 +28,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from functools import partial
 
@@ -68,6 +69,7 @@ _SSE_PING_SECONDS = 15
 _RATE_ASK = "10/minute"
 _RATE_AGENT = "3/minute"
 _RATE_INGEST = "2/hour"
+_IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
 
 
 def _rate_key(request: Request) -> str:
@@ -158,6 +160,15 @@ def _period_of(req: AskRequest) -> str | None:
     if req.period:
         return req.period
     return str(req.year) if req.year else None
+
+
+def _validated_idempotency_key(value: str | None) -> str:
+    """Return a safe stable submission key or reject the request."""
+    if value is None:
+        raise HTTPException(status_code=400, detail="missing Idempotency-Key header")
+    if not _IDEMPOTENCY_KEY_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail="invalid Idempotency-Key header")
+    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -263,38 +274,43 @@ async def agent(request: Request, req: AgentRequest) -> dict:
 
 @app.post("/ingest", status_code=202, dependencies=[Depends(require_token)])
 @limiter.limit(_RATE_INGEST)
-async def ingest(request: Request, req: IngestRequest) -> dict:
-    """Persist and enqueue an ingest batch, returning its polling location."""
+async def ingest(
+    request: Request,
+    req: IngestRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    """Persist and enqueue a retry-safe batch keyed by `Idempotency-Key`."""
+    idempotency_key = _validated_idempotency_key(idempotency_key)
     await run_in_threadpool(bootstrap)
-    batch_id, item_ids = await run_in_threadpool(
-        partial(
-            ingest_jobs.create_batch,
-            [ticker.upper() for ticker in req.tickers],
-            form_type=req.form_type,
-            year=req.year,
-            period=req.period,
+    try:
+        batch_id, item_ids = await run_in_threadpool(
+            partial(
+                ingest_jobs.create_batch,
+                [ticker.upper() for ticker in req.tickers],
+                form_type=req.form_type,
+                year=req.year,
+                period=req.period,
+                idempotency_key=idempotency_key,
+            )
         )
-    )
+    except ingest_jobs.IdempotencyConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "error": "Idempotency-Key was already used for a different request",
+            },
+        ) from exc
+
     publish_failed = False
     for item_id in item_ids:
         try:
             message_id = await run_in_threadpool(
                 qstash_queue.publish_ingest_item, item_id
             )
-        except Exception:  # noqa: BLE001 — queue failures are recorded per item
+        except Exception:  # noqa: BLE001 — ambiguous delivery stays queued
             publish_failed = True
             logger.exception("failed to publish ingest item %s", item_id)
-            try:
-                await run_in_threadpool(
-                    partial(
-                        ingest_jobs.mark_error,
-                        item_id,
-                        code="queue_publish_failed",
-                        message="unable to queue ingest job",
-                    )
-                )
-            except Exception:  # noqa: BLE001 — continue publishing the batch
-                logger.exception("failed to record publish error for item %s", item_id)
             continue
 
         try:
@@ -317,6 +333,8 @@ async def ingest(request: Request, req: IngestRequest) -> dict:
                 "code": "queue_publish_failed",
                 "error": "unable to queue one or more ingest jobs",
                 "job_id": batch_id,
+                "retryable": True,
+                "retry": "retry with the same Idempotency-Key",
             },
         )
     return {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Iterable
 
@@ -26,6 +28,10 @@ _ROW_COLUMNS = (
     "error_code",
     "error_message",
 )
+
+
+class IdempotencyConflictError(ValueError):
+    """Signal reuse of an idempotency key for a different ingest request."""
 
 
 def _as_dict(row) -> dict:
@@ -128,28 +134,59 @@ def create_batch(
     form_type: str,
     year: int | None,
     period: str | None,
+    idempotency_key: str,
 ) -> tuple[str, list[str]]:
-    """Create one queued ingest item for every ticker in a new batch."""
-    batch_id = str(uuid.uuid4())
-    item_ids = [str(uuid.uuid4()) for _ in tickers]
-    rows = [
-        (item_id, batch_id, ticker, form_type, year, period)
-        for item_id, ticker in zip(item_ids, tickers, strict=True)
-    ]
+    """Create or replay one durable batch identified by an idempotency key."""
+    candidate_batch_id = str(uuid.uuid4())
+    canonical_request = json.dumps(
+        {
+            "tickers": tickers,
+            "form_type": form_type,
+            "year": year,
+            "period": period,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    fingerprint = hashlib.sha256(canonical_request.encode()).hexdigest()
 
-    def _write(conn) -> None:
-        conn.executemany(
+    def _write(conn) -> tuple[str, list[str]]:
+        batch_row = conn.execute(
             """
-            INSERT INTO ingest_jobs
-                (id, batch_id, ticker, form_type, year, period)
-            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
+            INSERT INTO ingest_batches (id, idempotency_key, request_fingerprint)
+            VALUES (%s::uuid, %s, %s)
+            ON CONFLICT (idempotency_key) DO UPDATE
+            SET idempotency_key = EXCLUDED.idempotency_key
+            RETURNING id::text, request_fingerprint
             """,
-            rows,
-        )
+            (candidate_batch_id, idempotency_key, fingerprint),
+        ).fetchone()
+        batch_id, persisted_fingerprint = batch_row
+        if persisted_fingerprint != fingerprint:
+            raise IdempotencyConflictError
 
-    db.run_write(_write)
-    return batch_id, item_ids
+        batch_uuid = uuid.UUID(batch_id)
+        item_ids = [
+            str(uuid.uuid5(batch_uuid, f"ingest-item:{index}"))
+            for index in range(len(tickers))
+        ]
+        rows = [
+            (item_id, batch_id, ticker, form_type, year, period)
+            for item_id, ticker in zip(item_ids, tickers, strict=True)
+        ]
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO ingest_jobs
+                    (id, batch_id, ticker, form_type, year, period)
+                VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                rows,
+            )
+        return batch_id, item_ids
+
+    return db.run_write(_write)
 
 
 def get_batch(batch_id: str) -> dict | None:

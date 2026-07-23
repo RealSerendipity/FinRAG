@@ -67,6 +67,7 @@ def test_span_noop_when_disabled():
 # FastAPI surface
 # --------------------------------------------------------------------------- #
 client = TestClient(api.app)
+_IDEMPOTENCY_HEADERS = {"Idempotency-Key": "request-123"}
 
 
 def test_health():
@@ -130,6 +131,24 @@ def test_ingest_requires_year_or_period():
     assert resp.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "invalid_key",
+    ["short", "request with spaces", "x" * 129],
+)
+def test_ingest_requires_valid_idempotency_key(invalid_key):
+    missing = client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024})
+    invalid = client.post(
+        "/ingest",
+        json={"tickers": ["AAPL"], "year": 2024},
+        headers={"Idempotency-Key": invalid_key},
+    )
+
+    assert missing.status_code == 400
+    assert missing.json()["detail"] == "missing Idempotency-Key header"
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"] == "invalid Idempotency-Key header"
+
+
 def test_ingest_returns_persisted_job_and_publishes_each_item(monkeypatch):
     monkeypatch.setattr(api, "bootstrap", lambda: None)
     created = []
@@ -156,6 +175,7 @@ def test_ingest_returns_persisted_job_and_publishes_each_item(monkeypatch):
     resp = client.post(
         "/ingest",
         json={"tickers": ["aapl", "msft"], "year": 2024},
+        headers=_IDEMPOTENCY_HEADERS,
     )
 
     assert resp.status_code == 202
@@ -165,6 +185,7 @@ def test_ingest_returns_persisted_job_and_publishes_each_item(monkeypatch):
         "poll": "/ingest/batch-1",
     }
     assert created[0][0] == (["AAPL", "MSFT"],)
+    assert created[0][1]["idempotency_key"] == "request-123"
     assert published == ["item-1", "item-2"]
     assert recorded == [
         ("item-1", "msg-item-1"),
@@ -172,47 +193,112 @@ def test_ingest_returns_persisted_job_and_publishes_each_item(monkeypatch):
     ]
 
 
-def test_ingest_publish_failure_marks_item_and_continues(monkeypatch):
+def test_ingest_publish_failure_stays_queued_and_same_key_retry_reuses_items(
+    monkeypatch,
+):
     monkeypatch.setattr(api, "bootstrap", lambda: None)
+    created = []
     monkeypatch.setattr(
         api.ingest_jobs,
         "create_batch",
-        lambda *a, **k: ("batch-1", ["item-1", "item-2"]),
+        lambda *a, **k: created.append((a, k)) or ("batch-1", ["item-1", "item-2"]),
     )
     published = []
+    first_attempt = True
 
     def _publish(item_id):
+        nonlocal first_attempt
         published.append(item_id)
-        if item_id == "item-1":
+        if first_attempt and item_id == "item-1":
             raise RuntimeError("queue unavailable")
         return "msg-2"
 
     monkeypatch.setattr(api.qstash_queue, "publish_ingest_item", _publish)
-    marked = []
+    monkeypatch.setattr(api.ingest_jobs, "record_message", lambda *a: True)
+
+    first = client.post(
+        "/ingest",
+        json={"tickers": ["AAPL", "MSFT"], "year": 2024},
+        headers=_IDEMPOTENCY_HEADERS,
+    )
+    first_attempt = False
+    second = client.post(
+        "/ingest",
+        json={"tickers": ["AAPL", "MSFT"], "year": 2024},
+        headers=_IDEMPOTENCY_HEADERS,
+    )
+
+    assert first.status_code == 503
+    assert first.json()["detail"] == {
+        "code": "queue_publish_failed",
+        "error": "unable to queue one or more ingest jobs",
+        "job_id": "batch-1",
+        "retryable": True,
+        "retry": "retry with the same Idempotency-Key",
+    }
+    assert second.status_code == 202
+    assert len(created) == 2
+    assert created[0][1]["idempotency_key"] == created[1][1]["idempotency_key"]
+    assert published == ["item-1", "item-2", "item-1", "item-2"]
+
+
+def test_publish_ambiguous_failure_leaves_item_claimable_by_worker(monkeypatch):
+    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "create_batch",
+        lambda *a, **k: ("batch-1", ["item-1"]),
+    )
+    monkeypatch.setattr(
+        api.qstash_queue,
+        "publish_ingest_item",
+        lambda item_id: (_ for _ in ()).throw(RuntimeError("response lost")),
+    )
     monkeypatch.setattr(
         api.ingest_jobs,
         "mark_error",
-        lambda item_id, **kwargs: marked.append((item_id, kwargs)) or True,
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must stay queued")),
     )
-    monkeypatch.setattr(api.ingest_jobs, "record_message", lambda *a: True)
+
+    submit = client.post(
+        "/ingest",
+        json={"tickers": ["AAPL"], "year": 2024},
+        headers=_IDEMPOTENCY_HEADERS,
+    )
+
+    assert submit.status_code == 503
+
+    _accept_signature(monkeypatch)
+    monkeypatch.setattr(api.ingest_jobs, "claim", lambda item_id: _claimed_item())
+    monkeypatch.setattr(api, "run_ingest", lambda *a, **k: 42)
+    monkeypatch.setattr(api.ingest_jobs, "mark_done", lambda *a, **k: True)
+    worker = client.post(
+        "/internal/ingest/run",
+        json={"item_id": "item-1"},
+        headers=_signed_headers(),
+    )
+    assert worker.status_code == 200
+    assert worker.json() == {"status": "done", "chunks": 42}
+
+
+def test_ingest_same_key_with_different_payload_is_409(monkeypatch):
+    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    monkeypatch.setattr(
+        api.ingest_jobs,
+        "create_batch",
+        lambda *a, **k: (_ for _ in ()).throw(
+            api.ingest_jobs.IdempotencyConflictError
+        ),
+    )
 
     resp = client.post(
         "/ingest",
-        json={"tickers": ["AAPL", "MSFT"], "year": 2024},
+        json={"tickers": ["MSFT"], "year": 2024},
+        headers=_IDEMPOTENCY_HEADERS,
     )
 
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["job_id"] == "batch-1"
-    assert published == ["item-1", "item-2"]
-    assert marked == [
-        (
-            "item-1",
-            {
-                "code": "queue_publish_failed",
-                "message": "unable to queue ingest job",
-            },
-        )
-    ]
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "idempotency_conflict"
 
 
 def test_ingest_record_message_false_or_exception_does_not_fail_submit(
@@ -242,6 +328,7 @@ def test_ingest_record_message_false_or_exception_does_not_fail_submit(
     resp = client.post(
         "/ingest",
         json={"tickers": ["AAPL", "MSFT"], "year": 2024},
+        headers=_IDEMPOTENCY_HEADERS,
     )
 
     assert resp.status_code == 202
@@ -586,7 +673,11 @@ def test_token_gate_disabled_by_default(monkeypatch):
     )
     monkeypatch.setattr(api.qstash_queue, "publish_ingest_item", lambda item_id: "msg-1")
     monkeypatch.setattr(api.ingest_jobs, "record_message", lambda *a: True)
-    resp = client.post("/ingest", json={"tickers": ["AAPL"], "year": 2024})
+    resp = client.post(
+        "/ingest",
+        json={"tickers": ["AAPL"], "year": 2024},
+        headers=_IDEMPOTENCY_HEADERS,
+    )
     assert resp.status_code == 202
 
 

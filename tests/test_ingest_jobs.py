@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from src import ingest_jobs
 
 
@@ -77,23 +79,91 @@ def test_get_batch_returns_none_for_an_unknown_batch(monkeypatch):
     assert ingest_jobs.get_batch("00000000-0000-0000-0000-000000000099") is None
 
 
-def test_create_batch_inserts_one_row_per_ticker_in_one_executemany(monkeypatch):
-    calls = []
+class _BatchResult:
+    def __init__(self, row):
+        self.row = row
 
-    class _Conn:
-        def executemany(self, sql, params):
-            calls.append((sql, list(params)))
+    def fetchone(self):
+        return self.row
 
-    monkeypatch.setattr(ingest_jobs.db, "run_write", lambda fn: fn(_Conn()))
 
-    batch_id, item_ids = ingest_jobs.create_batch(
-        ["AAPL", "MSFT"], form_type="10-K", year=2024, period=None
+class _BatchConn:
+    """Model the idempotency-key constraint and durable item inserts."""
+
+    def __init__(self):
+        self.batches = {}
+        self.rows = {}
+        self.batch_sql = []
+
+    def execute(self, sql, params):
+        assert "INSERT INTO ingest_batches" in sql
+        assert "ON CONFLICT (idempotency_key) DO UPDATE" in sql
+        candidate_id, idempotency_key, fingerprint = params
+        self.batch_sql.append(sql)
+        self.batches.setdefault(idempotency_key, (candidate_id, fingerprint))
+        return _BatchResult(self.batches[idempotency_key])
+
+    def cursor(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def executemany(self, sql, params):
+        assert "ON CONFLICT (id) DO NOTHING" in sql
+        for row in params:
+            self.rows.setdefault(row[0], row)
+
+
+def test_create_batch_reuses_ids_for_same_key_and_payload(monkeypatch):
+    conn = _BatchConn()
+    monkeypatch.setattr(ingest_jobs.db, "run_write", lambda fn: fn(conn))
+
+    first = ingest_jobs.create_batch(
+        ["AAPL", "AAPL", "MSFT"],
+        form_type="10-K",
+        year=2024,
+        period=None,
+        idempotency_key="request-123",
+    )
+    second = ingest_jobs.create_batch(
+        ["AAPL", "AAPL", "MSFT"],
+        form_type="10-K",
+        year=2024,
+        period=None,
+        idempotency_key="request-123",
     )
 
-    assert len(item_ids) == 2
-    assert len(calls) == 1
-    assert calls[0][1][0][1] == batch_id
-    assert [row[2] for row in calls[0][1]] == ["AAPL", "MSFT"]
+    assert second == first
+    assert len(first[1]) == 3
+    assert len(set(first[1])) == 3
+    assert len(conn.batches) == 1
+    assert len(conn.rows) == 3
+    assert [row[2] for row in conn.rows.values()] == ["AAPL", "AAPL", "MSFT"]
+
+
+def test_create_batch_rejects_same_key_with_different_ordered_payload(monkeypatch):
+    conn = _BatchConn()
+    monkeypatch.setattr(ingest_jobs.db, "run_write", lambda fn: fn(conn))
+    ingest_jobs.create_batch(
+        ["AAPL", "MSFT"],
+        form_type="10-K",
+        year=2024,
+        period=None,
+        idempotency_key="request-123",
+    )
+
+    with pytest.raises(ingest_jobs.IdempotencyConflictError):
+        ingest_jobs.create_batch(
+            ["MSFT", "AAPL"],
+            form_type="10-K",
+            year=2024,
+            period=None,
+            idempotency_key="request-123",
+        )
 
 
 def test_get_batch_maps_persisted_tuple_rows_and_aggregates(monkeypatch):
@@ -468,15 +538,12 @@ def test_stale_worker_transitions_are_rejected_without_terminal_regression(monke
 
 
 def test_create_batch_replay_is_harmless_with_stable_generated_ids(monkeypatch):
-    generated_ids = iter(
-        [
-            uuid.UUID("00000000-0000-0000-0000-000000000010"),
-            uuid.UUID("00000000-0000-0000-0000-000000000011"),
-            uuid.UUID("00000000-0000-0000-0000-000000000012"),
-        ]
+    monkeypatch.setattr(
+        ingest_jobs.uuid,
+        "uuid4",
+        lambda: uuid.UUID("00000000-0000-0000-0000-000000000010"),
     )
-    monkeypatch.setattr(ingest_jobs.uuid, "uuid4", lambda: next(generated_ids))
-    conn = _StatefulConn({})
+    conn = _BatchConn()
 
     def replaying_write(fn):
         fn(conn)
@@ -485,13 +552,17 @@ def test_create_batch_replay_is_harmless_with_stable_generated_ids(monkeypatch):
     monkeypatch.setattr(ingest_jobs.db, "run_write", replaying_write)
 
     batch_id, item_ids = ingest_jobs.create_batch(
-        ["AAPL", "MSFT"], form_type="10-K", year=2024, period=None
+        ["AAPL", "MSFT"],
+        form_type="10-K",
+        year=2024,
+        period=None,
+        idempotency_key="request-123",
     )
 
     assert batch_id == "00000000-0000-0000-0000-000000000010"
     assert set(conn.rows) == set(item_ids)
     assert len(conn.rows) == 2
-    assert len(conn.inserted_rows) == 4
+    assert len(conn.batches) == 1
 
 
 def test_malformed_uuid_reads_and_claim_do_not_touch_the_database(monkeypatch):

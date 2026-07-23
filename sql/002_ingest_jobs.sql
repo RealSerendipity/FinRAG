@@ -1,3 +1,14 @@
+CREATE TABLE IF NOT EXISTS ingest_batches (
+    id                   UUID        PRIMARY KEY,
+    idempotency_key      TEXT        NOT NULL UNIQUE,
+    request_fingerprint  TEXT        NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ingest_batches_idempotency_key_ck
+        CHECK (char_length(idempotency_key) BETWEEN 8 AND 128),
+    CONSTRAINT ingest_batches_fingerprint_ck
+        CHECK (char_length(request_fingerprint) = 64)
+);
+
 CREATE TABLE IF NOT EXISTS ingest_jobs (
     id                 UUID             PRIMARY KEY,
     batch_id           UUID             NOT NULL,
