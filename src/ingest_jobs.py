@@ -42,6 +42,38 @@ def _is_valid_uuid(value: str) -> bool:
     return True
 
 
+def _is_replayed_transition(
+    conn,
+    *,
+    item_id: str,
+    claim_token: str,
+    status: str,
+    expected: dict[str, object],
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT status, claim_token::text, chunks, elapsed_s, error_code, error_message
+        FROM ingest_jobs
+        WHERE id = %s::uuid
+        """,
+        (item_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    current = dict(
+        zip(
+            ("status", "claim_token", "chunks", "elapsed_s", "error_code", "error_message"),
+            row,
+            strict=True,
+        )
+    )
+    return (
+        current["status"] == status
+        and current["claim_token"] == claim_token
+        and all(current[field] == value for field, value in expected.items())
+    )
+
+
 def aggregate_batch(batch_id: str, rows: Iterable) -> dict:
     """Return the public status and results for one persisted batch."""
     items = [_as_dict(row) for row in rows]
@@ -198,10 +230,13 @@ def claim(item_id: str) -> dict | None:
     return db.run_write(_write)
 
 
-def record_message(item_id: str, message_id: str) -> None:
-    """Store the QStash message identifier for an ingest item."""
-    def _write(conn) -> None:
-        conn.execute(
+def record_message(item_id: str, message_id: str) -> bool:
+    """Store a QStash message ID and report whether its item exists."""
+    if not _is_valid_uuid(item_id):
+        return False
+
+    def _write(conn) -> bool:
+        result = conn.execute(
             """
             UPDATE ingest_jobs
             SET qstash_message_id = %s, updated_at = now()
@@ -209,8 +244,9 @@ def record_message(item_id: str, message_id: str) -> None:
             """,
             (message_id, item_id),
         )
+        return result.rowcount == 1
 
-    db.run_write(_write)
+    return db.run_write(_write)
 
 
 def mark_done(item_id: str, *, claim_token: str, chunks: int, elapsed_s: float) -> bool:
@@ -231,7 +267,15 @@ def mark_done(item_id: str, *, claim_token: str, chunks: int, elapsed_s: float) 
             """,
             (chunks, elapsed_s, item_id, claim_token),
         )
-        return result.rowcount == 1
+        if result.rowcount == 1:
+            return True
+        return _is_replayed_transition(
+            conn,
+            item_id=item_id,
+            claim_token=claim_token,
+            status="done",
+            expected={"chunks": chunks, "elapsed_s": elapsed_s},
+        )
 
     return db.run_write(_write)
 
@@ -252,7 +296,15 @@ def mark_retrying(item_id: str, *, claim_token: str, elapsed_s: float) -> bool:
             """,
             (elapsed_s, item_id, claim_token),
         )
-        return result.rowcount == 1
+        if result.rowcount == 1:
+            return True
+        return _is_replayed_transition(
+            conn,
+            item_id=item_id,
+            claim_token=claim_token,
+            status="retrying",
+            expected={"elapsed_s": elapsed_s},
+        )
 
     return db.run_write(_write)
 
@@ -301,6 +353,17 @@ def mark_error(
             """,
             (code, message, elapsed_s, item_id, claim_token),
         )
-        return result.rowcount == 1
+        if result.rowcount == 1:
+            return True
+        expected = {"error_code": code, "error_message": message}
+        if elapsed_s is not None:
+            expected["elapsed_s"] = elapsed_s
+        return _is_replayed_transition(
+            conn,
+            item_id=item_id,
+            claim_token=claim_token,
+            status="error",
+            expected=expected,
+        )
 
     return db.run_write(_write)

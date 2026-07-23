@@ -230,7 +230,7 @@ def test_state_transitions_issue_expected_status_updates(monkeypatch):
 
     item_id = "00000000-0000-0000-0000-000000000001"
     claim_token = "00000000-0000-0000-0000-000000000003"
-    ingest_jobs.record_message(item_id, "message-1")
+    assert ingest_jobs.record_message(item_id, "message-1")
     assert ingest_jobs.mark_done(item_id, claim_token=claim_token, chunks=42, elapsed_s=3.2)
     assert ingest_jobs.mark_retrying(item_id, claim_token=claim_token, elapsed_s=1.5)
     assert ingest_jobs.mark_error(
@@ -311,6 +311,21 @@ class _StatefulConn:
             self.inserted_rows.append(row)
 
     def execute(self, sql, params):
+        if "SELECT status, claim_token::text, chunks, elapsed_s, error_code, error_message" in sql:
+            row = self.rows.get(params[0])
+            if row is None:
+                return _StatefulResult()
+            return _StatefulResult(
+                (
+                    row["status"],
+                    row["claim_token"],
+                    row["chunks"],
+                    row["elapsed_s"],
+                    row["error_code"],
+                    row["error_message"],
+                )
+            )
+
         if "attempts = CASE" in sql:
             assert "interval '330 seconds'" in sql
             assert "claim_token = %s::uuid" in sql
@@ -492,3 +507,64 @@ def test_malformed_uuid_reads_and_claim_do_not_touch_the_database(monkeypatch):
     assert ingest_jobs.get_batch("not-a-uuid") is None
     assert ingest_jobs.get_item("not-a-uuid") is None
     assert ingest_jobs.claim("not-a-uuid") is None
+
+
+def test_mark_done_replay_confirms_the_same_persisted_transition(monkeypatch):
+    claim_token = str(uuid.uuid4())
+    row = _job_row(status="running", claim_token=claim_token)
+    conn = _StatefulConn({row["id"]: row})
+
+    def replaying_write(fn):
+        assert fn(conn)
+        return fn(conn)
+
+    monkeypatch.setattr(ingest_jobs.db, "run_write", replaying_write)
+
+    assert ingest_jobs.mark_done(row["id"], claim_token=claim_token, chunks=42, elapsed_s=2.0)
+    assert row["status"] == "done"
+
+
+def test_mark_retrying_replay_confirms_the_same_persisted_transition(monkeypatch):
+    claim_token = str(uuid.uuid4())
+    row = _job_row(status="running", claim_token=claim_token)
+    conn = _StatefulConn({row["id"]: row})
+
+    def replaying_write(fn):
+        assert fn(conn)
+        return fn(conn)
+
+    monkeypatch.setattr(ingest_jobs.db, "run_write", replaying_write)
+
+    assert ingest_jobs.mark_retrying(row["id"], claim_token=claim_token, elapsed_s=2.0)
+    assert row["status"] == "retrying"
+
+
+def test_mark_error_replay_confirms_the_same_persisted_transition(monkeypatch):
+    claim_token = str(uuid.uuid4())
+    row = _job_row(status="running", claim_token=claim_token)
+    conn = _StatefulConn({row["id"]: row})
+
+    def replaying_write(fn):
+        assert fn(conn)
+        return fn(conn)
+
+    monkeypatch.setattr(ingest_jobs.db, "run_write", replaying_write)
+
+    assert ingest_jobs.mark_error(
+        row["id"],
+        claim_token=claim_token,
+        code="transient_failure",
+        message="upstream unavailable",
+        elapsed_s=2.0,
+    )
+    assert row["status"] == "error"
+
+
+def test_record_message_rejects_a_malformed_item_uuid_without_a_database_write(monkeypatch):
+    monkeypatch.setattr(
+        ingest_jobs.db,
+        "run_write",
+        lambda *args: (_ for _ in ()).throw(AssertionError("write called")),
+    )
+
+    assert not ingest_jobs.record_message("not-a-uuid", "message-1")
