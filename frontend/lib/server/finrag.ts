@@ -2,6 +2,7 @@ const MAX_BODY_BYTES = 16 * 1024;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const HOSTLESS_ABSOLUTE_PATH = /^\/(?!\/)[A-Za-z0-9/_-]*$/;
 const SAFE_RESPONSE_HEADERS = ["content-type"] as const;
+const BODY_TOO_LARGE = Symbol("body-too-large");
 
 function backendConfig() {
   const baseUrl = process.env.FINRAG_API_URL?.trim().replace(/\/+$/, "");
@@ -17,6 +18,47 @@ function payloadTooLarge() {
     { code: "payload_too_large", error: "request body is too large" },
     { status: 413 },
   );
+}
+
+async function readBoundedBody(request: Request) {
+  if (request.method === "GET" || request.method === "HEAD") {
+    return undefined;
+  }
+  if (!request.body) {
+    return "";
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_BODY_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Cancellation is best-effort after the request has already been rejected.
+        }
+        return BODY_TOO_LARGE;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -35,12 +77,8 @@ export async function forwardToFinrag(
     return payloadTooLarge();
   }
 
-  const hasBody = request.method !== "GET" && request.method !== "HEAD";
-  const body = hasBody ? await request.text() : undefined;
-  if (
-    body &&
-    new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES
-  ) {
+  const body = await readBoundedBody(request);
+  if (body === BODY_TOO_LARGE) {
     return payloadTooLarge();
   }
 
@@ -79,7 +117,10 @@ export async function forwardToFinrag(
       headers: requestHeaders,
       body,
       cache: "no-store",
-      signal: AbortSignal.timeout(295_000),
+      signal: AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(295_000),
+      ]),
     });
     const responseHeaders = new Headers({ "cache-control": "no-store" });
     for (const name of SAFE_RESPONSE_HEADERS) {

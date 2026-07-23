@@ -136,6 +136,43 @@ describe("forwardToFinrag", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  test("stops streaming an oversized body at the overflow chunk and cancels it", async () => {
+    configureBackend();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    let pulls = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (pulls === 10) {
+            controller.close();
+            return;
+          }
+          pulls += 1;
+          controller.enqueue(new Uint8Array(6 * 1024));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const request = new Request("http://localhost/api/agent", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+    const response = await forwardToFinrag(request, "/agent");
+
+    expect(response.status).toBe(413);
+    expect(pulls).toBe(3);
+    expect(cancelled).toBe(true);
+    expect(request.body?.locked).toBe(false);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   test.each(["https://evil.example/agent", "//evil.example/agent", "agent"])(
     "rejects a non-hostless absolute upstream path: %s",
     async (path) => {
@@ -171,7 +208,62 @@ describe("forwardToFinrag", () => {
     );
 
     expect(timeout).toHaveBeenCalledWith(295_000);
-    expect(upstream.mock.calls[0][1].signal).toBe(signal);
+    const forwardedSignal = upstream.mock.calls[0][1].signal as AbortSignal;
+    expect(forwardedSignal).not.toBe(signal);
+    expect(forwardedSignal.aborted).toBe(false);
+  });
+
+  test("passes an already aborted client request signal upstream", async () => {
+    configureBackend();
+    const timeoutSignal = new AbortController().signal;
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(timeoutSignal);
+    const upstream = vi.fn().mockResolvedValue(successfulUpstream());
+    vi.stubGlobal("fetch", upstream);
+    const client = new AbortController();
+    client.abort();
+
+    await forwardToFinrag(
+      new Request("http://localhost/api/health", { signal: client.signal }),
+      "/health",
+    );
+
+    const forwardedSignal = upstream.mock.calls[0][1].signal as AbortSignal;
+    expect(forwardedSignal.aborted).toBe(true);
+    expect(timeout).toHaveBeenCalledWith(295_000);
+  });
+
+  test("propagates a later client abort to the in-flight upstream request", async () => {
+    configureBackend();
+    const client = new AbortController();
+    let forwardedSignal: AbortSignal | undefined;
+    let resolveUpstream: ((response: Response) => void) | undefined;
+    let markFetchStarted: (() => void) | undefined;
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        forwardedSignal = init.signal as AbortSignal;
+        markFetchStarted?.();
+        return new Promise<Response>((resolve) => {
+          resolveUpstream = resolve;
+        });
+      }),
+    );
+
+    const responsePromise = forwardToFinrag(
+      new Request("http://localhost/api/health", { signal: client.signal }),
+      "/health",
+    );
+    await fetchStarted;
+    client.abort();
+
+    expect(forwardedSignal?.aborted).toBe(true);
+    resolveUpstream?.(successfulUpstream());
+    await responsePromise;
   });
 
   test("returns a stable redacted 502 and logs no request data on fetch failure", async () => {
