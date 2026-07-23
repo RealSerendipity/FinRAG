@@ -4,6 +4,16 @@ import { expect, test, vi } from "vitest";
 import type { IngestStatus } from "@/lib/types";
 import { IngestPanel } from "./IngestPanel";
 
+function openPanel() {
+  const panel = screen.getByTestId("ingest-panel") as HTMLDetailsElement;
+  const summary = panel.querySelector("summary");
+  expect(summary).not.toBeNull();
+  if (!panel.open) {
+    fireEvent.click(summary!);
+  }
+  return within(panel);
+}
+
 test("submits one normalized ticker with the supported default filing fields", () => {
   const onSubmit = vi.fn();
   render(
@@ -19,22 +29,23 @@ test("submits one normalized ticker with the supported default filing fields", (
       onRetryPoll={vi.fn()}
     />,
   );
+  const panel = openPanel();
 
-  expect(screen.getByLabelText("Ingest a filing: Filing ticker")).toHaveValue(
+  expect(panel.getByLabelText("Ingest a filing: Filing ticker")).toHaveValue(
     "MSFT",
   );
-  expect(screen.getByLabelText("Ingest a filing: Year")).toHaveValue(2024);
-  expect(screen.getByLabelText("Ingest a filing: Form")).toHaveValue("10-K");
+  expect(panel.getByLabelText("Ingest a filing: Year")).toHaveValue(2024);
+  expect(panel.getByLabelText("Ingest a filing: Form")).toHaveValue("10-K");
   expect(
-    within(screen.getByLabelText("Ingest a filing: Form")).getAllByRole(
+    within(panel.getByLabelText("Ingest a filing: Form")).getAllByRole(
       "option",
     ),
   ).toHaveLength(5);
 
-  fireEvent.change(screen.getByLabelText("Ingest a filing: Filing ticker"), {
+  fireEvent.change(panel.getByLabelText("Ingest a filing: Filing ticker"), {
     target: { value: " msft " },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+  fireEvent.click(panel.getByRole("button", { name: "Ingest filing" }));
 
   expect(onSubmit).toHaveBeenCalledWith({
     tickers: ["MSFT"],
@@ -76,6 +87,7 @@ test("renders backend result and error strings as text", () => {
       onRetryPoll={vi.fn()}
     />,
   );
+  openPanel();
 
   expect(container).toHaveTextContent("<img src=x onerror=alert(1)>");
   expect(container.querySelector("img")).not.toBeInTheDocument();
@@ -97,8 +109,9 @@ test("exposes retry submission without rendering the idempotency key", () => {
       onRetryPoll={vi.fn()}
     />,
   );
+  const panel = openPanel();
 
-  fireEvent.click(screen.getByRole("button", { name: "Retry submission" }));
+  fireEvent.click(panel.getByRole("button", { name: "Retry submission" }));
 
   expect(onRetry).toHaveBeenCalledOnce();
   expect(container).not.toHaveTextContent("idempotency");
@@ -124,13 +137,44 @@ test("offers a separate status-check retry action", () => {
       onRetryPoll={onRetryPoll}
     />,
   );
+  const panel = openPanel();
 
   fireEvent.click(
-    screen.getByRole("button", { name: "Retry status check" }),
+    panel.getByRole("button", { name: "Retry status check" }),
   );
 
   expect(onRetryPoll).toHaveBeenCalledOnce();
   expect(
-    screen.queryByRole("button", { name: "Retry submission" }),
+    panel.queryByRole("button", { name: "Retry submission" }),
   ).not.toBeInTheDocument();
+});
+
+test("uses a collapsed native disclosure with labelled form controls", () => {
+  render(
+    <IngestPanel
+      locale="en"
+      pending={false}
+      status={null}
+      error={null}
+      canRetry={false}
+      canRetryPoll={false}
+      onSubmit={vi.fn()}
+      onRetry={vi.fn()}
+      onRetryPoll={vi.fn()}
+    />,
+  );
+
+  const details = screen.getByTestId("ingest-panel");
+  expect(details.tagName).toBe("DETAILS");
+  expect(details).not.toHaveAttribute("open");
+  expect(details.querySelector("summary")).toHaveTextContent(
+    "⬇️ Ingest a filing — add a company / year to the store",
+  );
+
+  const panel = openPanel();
+  expect(panel.getByLabelText("Ingest a filing: Filing ticker")).toHaveAttribute(
+    "id",
+  );
+  expect(panel.getByLabelText("Ingest a filing: Year")).toHaveAttribute("id");
+  expect(panel.getByLabelText("Ingest a filing: Form")).toHaveAttribute("id");
 });

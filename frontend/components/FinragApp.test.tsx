@@ -71,6 +71,19 @@ function mockFetch(
     );
 }
 
+function desktopSettings() {
+  return within(screen.getByTestId("desktop-settings"));
+}
+
+function ingestPanel() {
+  const panel = screen.getByTestId("ingest-panel") as HTMLDetailsElement;
+  const summary = panel.querySelector("summary");
+  if (!panel.open && summary) {
+    fireEvent.click(summary);
+  }
+  return within(panel);
+}
+
 beforeEach(() => {
   mockFetch((url) => {
     if (url === "/api/health") {
@@ -88,24 +101,64 @@ afterEach(() => {
 describe("FinragApp", () => {
   test("defaults to English RAG mode with scope controls", async () => {
     render(<FinragApp />);
+    const settings = desktopSettings();
 
     expect(
       screen.getByRole("heading", { name: /finrag/ }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "RAG" })).toBeChecked();
-    expect(screen.getByRole("heading", { name: "Scope" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Ticker")).toHaveValue("AAPL");
-    expect(screen.getByLabelText("Fiscal year")).toHaveValue(2024);
-    await screen.findByText(/Health: ok/);
+    expect(settings.getByRole("radio", { name: "RAG" })).toBeChecked();
+    expect(settings.getByRole("heading", { name: "Scope" })).toBeInTheDocument();
+    expect(settings.getByLabelText("Ticker")).toHaveValue("AAPL");
+    expect(settings.getByLabelText("Fiscal year")).toHaveValue(2024);
+    await waitFor(() =>
+      expect(settings.getByText(/Health: ok/)).toBeInTheDocument(),
+    );
+  });
+
+  test("renders separately named desktop and mobile settings without duplicate ids", () => {
+    const { container } = render(<FinragApp />);
+    const desktop = screen.getByTestId("desktop-settings");
+    const mobile = screen.getByTestId("mobile-settings");
+    const ids = Array.from(container.querySelectorAll("[id]")).map(
+      (element) => element.id,
+    );
+
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(
+      within(desktop).getByRole("radiogroup", { name: "Mode" }),
+    ).toBeInTheDocument();
+    expect(
+      within(mobile).getByRole("radiogroup", { name: "Mode" }),
+    ).toBeInTheDocument();
+    expect(
+      within(desktop).getByRole("button", {
+        name: "Language: English. Switch to 中文",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(mobile).getByRole("button", {
+        name: "Language: English. Switch to 中文",
+      }),
+    ).toBeInTheDocument();
+    expect(desktop.querySelector('input[type="radio"]')).toHaveAttribute(
+      "name",
+      "desktop-mode",
+    );
+    expect(mobile.querySelector('input[type="radio"]')).toHaveAttribute(
+      "name",
+      "mobile-mode",
+    );
+    expect(mobile.tagName).toBe("DETAILS");
   });
 
   test("switching to Agent hides scope and replaces the example question", () => {
     render(<FinragApp />);
+    const settings = desktopSettings();
 
-    fireEvent.click(screen.getByRole("radio", { name: "Agent" }));
+    fireEvent.click(settings.getByRole("radio", { name: "Agent" }));
 
-    expect(screen.queryByRole("heading", { name: "Scope" })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Ticker")).not.toBeInTheDocument();
+    expect(settings.queryByRole("heading", { name: "Scope" })).not.toBeInTheDocument();
+    expect(settings.queryByLabelText("Ticker")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Question")).toHaveValue(
       "How did Apple's R&D-to-revenue ratio change from FY2023 to FY2024?",
     );
@@ -116,9 +169,11 @@ describe("FinragApp", () => {
     const question = screen.getByLabelText("Question");
     fireEvent.change(question, { target: { value: "My unchanged question?" } });
 
-    fireEvent.change(screen.getByLabelText("Language"), {
-      target: { value: "zh" },
-    });
+    fireEvent.click(
+      desktopSettings().getByRole("button", {
+        name: "Language: English. Switch to 中文",
+      }),
+    );
 
     expect(screen.getByLabelText("问题")).toHaveValue("My unchanged question?");
     expect(screen.getByRole("button", { name: "提问" })).toBeInTheDocument();
@@ -194,10 +249,10 @@ describe("FinragApp", () => {
       ]);
     });
     render(<FinragApp />);
-    fireEvent.change(screen.getByLabelText("Ticker"), {
+    fireEvent.change(desktopSettings().getByLabelText("Ticker"), {
       target: { value: " msft " },
     });
-    fireEvent.click(screen.getByLabelText("Filter by year"));
+    fireEvent.click(desktopSettings().getByLabelText("Filter by year"));
 
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
     await screen.findByText(ragAnswer.text);
@@ -271,7 +326,7 @@ describe("FinragApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
     expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("radio", { name: "Agent" }));
+    fireEvent.click(desktopSettings().getByRole("radio", { name: "Agent" }));
 
     expect(ragSignal?.aborted).toBe(true);
     expect(screen.getByRole("button", { name: "Ask" })).not.toBeDisabled();
@@ -319,7 +374,7 @@ describe("FinragApp", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     render(<FinragApp />);
-    fireEvent.click(screen.getByRole("radio", { name: "Agent" }));
+    fireEvent.click(desktopSettings().getByRole("radio", { name: "Agent" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
@@ -388,7 +443,7 @@ describe("FinragApp", () => {
           }),
     );
     render(<FinragApp />);
-    fireEvent.click(screen.getByRole("radio", { name: "Agent" }));
+    fireEvent.click(desktopSettings().getByRole("radio", { name: "Agent" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
@@ -408,7 +463,9 @@ describe("FinragApp", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
-    expect(screen.getByLabelText("Language")).toBeDisabled();
+    expect(
+      desktopSettings().getByRole("button", { name: /Language:/ }),
+    ).toBeDisabled();
   });
 
   test("relocalizes completed local status without changing model text", async () => {
@@ -425,9 +482,11 @@ describe("FinragApp", () => {
     expect(await screen.findByText("Complete")).toBeInTheDocument();
     expect(screen.getByText(ragAnswer.text)).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Language"), {
-      target: { value: "zh" },
-    });
+    fireEvent.click(
+      desktopSettings().getByRole("button", {
+        name: "Language: English. Switch to 中文",
+      }),
+    );
 
     expect(screen.getByText("已完成")).toBeInTheDocument();
     expect(screen.getByText(ragAnswer.text)).toBeInTheDocument();
@@ -441,9 +500,11 @@ describe("FinragApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Enter a question.");
 
-    fireEvent.change(screen.getByLabelText("Language"), {
-      target: { value: "zh" },
-    });
+    fireEvent.click(
+      desktopSettings().getByRole("button", {
+        name: "Language: English. Switch to 中文",
+      }),
+    );
 
     expect(screen.getByRole("alert")).toHaveTextContent("请输入问题。");
   });
@@ -462,7 +523,9 @@ describe("FinragApp", () => {
     );
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText(/Health: ok/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(desktopSettings().getByText(/Health: ok/)).toBeInTheDocument(),
+    );
   });
 
   test("aborts an active question request on unmount", async () => {
@@ -537,7 +600,7 @@ describe("FinragApp", () => {
     render(<FinragApp />);
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
     expect(screen.getByText("Queued")).toBeInTheDocument();
     expect(randomUUID).toHaveBeenCalledOnce();
@@ -612,7 +675,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     expect(
       await screen.findByRole("button", { name: "Retry submission" }),
     ).toBeInTheDocument();
@@ -650,7 +713,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
     expect(screen.getByText("Queued")).toBeInTheDocument();
 
@@ -700,7 +763,7 @@ describe("FinragApp", () => {
     });
     const { unmount } = render(<FinragApp />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
     expect(screen.getByText("Queued")).toBeInTheDocument();
     await act(async () => {
@@ -709,7 +772,7 @@ describe("FinragApp", () => {
     expect(signals[0]?.aborted).toBe(false);
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
     expect(signals[0]?.aborted).toBe(true);
     await act(async () => {
@@ -733,7 +796,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "The server returned an invalid response.",
@@ -789,7 +852,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
 
     for (let index = 0; index < pollResponses.length; index += 1) {
@@ -845,7 +908,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(15_000);
@@ -883,7 +946,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
     expect(screen.getByRole("alert")).toHaveTextContent(
       "The server returned an invalid response.",
@@ -925,7 +988,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     });
 
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -973,7 +1036,7 @@ describe("FinragApp", () => {
     });
     render(<FinragApp />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
       await vi.advanceTimersByTimeAsync(5_000);
     });
 
@@ -1014,7 +1077,7 @@ describe("FinragApp", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     render(<FinragApp />);
-    fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
     const retry = await screen.findByRole("button", {
       name: "Retry submission",
     });
@@ -1057,7 +1120,7 @@ describe("FinragApp", () => {
       </StrictMode>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    fireEvent.click(ingestPanel().getByRole("button", { name: "Ingest filing" }));
 
     await waitFor(() => expect(posts).toBe(1));
   });

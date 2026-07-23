@@ -774,24 +774,47 @@ export function FinragApp() {
 
   return (
     <main className="finrag-app">
-      <ModeSidebar
-        locale={locale}
-        mode={mode}
-        ticker={ticker}
-        year={year}
-        useYear={useYear}
-        topK={topK}
-        health={health}
-        pending={pending}
-        onLocaleChange={setLocale}
-        onModeChange={changeMode}
-        onTickerChange={setTicker}
-        onYearChange={setYear}
-        onUseYearChange={setUseYear}
-        onTopKChange={setTopK}
-      />
+      <aside className="desktop-sidebar" data-testid="desktop-settings">
+        <ModeSidebar
+          idPrefix="desktop"
+          locale={locale}
+          mode={mode}
+          ticker={ticker}
+          year={year}
+          useYear={useYear}
+          topK={topK}
+          health={health}
+          pending={pending}
+          onLocaleChange={setLocale}
+          onModeChange={changeMode}
+          onTickerChange={setTicker}
+          onYearChange={setYear}
+          onUseYearChange={setUseYear}
+          onTopKChange={setTopK}
+        />
+      </aside>
       <div className="finrag-content">
-        <header>
+        <details className="mobile-settings" data-testid="mobile-settings">
+          <summary>{t.settingsTitle}</summary>
+          <ModeSidebar
+            idPrefix="mobile"
+            locale={locale}
+            mode={mode}
+            ticker={ticker}
+            year={year}
+            useYear={useYear}
+            topK={topK}
+            health={health}
+            pending={pending}
+            onLocaleChange={setLocale}
+            onModeChange={changeMode}
+            onTickerChange={setTicker}
+            onYearChange={setYear}
+            onUseYearChange={setUseYear}
+            onTopKChange={setTopK}
+          />
+        </details>
+        <header className="app-header">
           <h1>📑 {t.appTitle}</h1>
           <p>{t.appTagline}</p>
         </header>
@@ -804,7 +827,11 @@ export function FinragApp() {
           onQuestionChange={setQuestion}
           onSubmit={() => void submitQuestion()}
         />
-        {errorText ? <p role="alert">{errorText}</p> : null}
+        {errorText ? (
+          <p className="error-message" role="alert" aria-live="assertive">
+            {errorText}
+          </p>
+        ) : null}
         {mode === "rag" && ragResult ? (
           <RagResult locale={locale} result={ragResult} />
         ) : null}

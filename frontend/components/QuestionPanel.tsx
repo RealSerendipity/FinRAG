@@ -37,7 +37,16 @@ export function QuestionPanel({
       <button type="submit" disabled={pending}>
         {askLabel}
       </button>
-      {statusText ? <p role="status">{statusText}</p> : null}
+      {statusText ? (
+        <p
+          className="request-status"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {statusText}
+        </p>
+      ) : null}
     </form>
   );
 }

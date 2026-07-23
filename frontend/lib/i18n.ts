@@ -59,6 +59,7 @@ const en = {
   agentStoppedBlocked: "Blocked by policy or unavailable tools",
   agentStoppedBlockedOutput: "Blocked output",
   ingestTitle: "Ingest a filing",
+  ingestSummary: "⬇️ Ingest a filing — add a company / year to the store",
   ingestDescription:
     "Fetch a filing from SEC EDGAR and index it for future questions.",
   ingestTicker: "Filing ticker",
@@ -153,6 +154,7 @@ const zh: Record<CopyKey, string> = {
   agentStoppedBlocked: "因策略限制或工具不可用而停止",
   agentStoppedBlockedOutput: "输出被阻止",
   ingestTitle: "导入文件",
+  ingestSummary: "⬇️ 导入文件 — 将公司 / 年份添加到资料库",
   ingestDescription: "从 SEC EDGAR 获取文件并建立索引，以便后续提问。",
   ingestTicker: "文件股票代码",
   ingestYear: "年份",
