@@ -56,6 +56,8 @@ const en = {
   agentStopped: "Stopped",
   agentStoppedFinal: "Final answer",
   agentStoppedMaxSteps: "Maximum steps reached",
+  agentStoppedBlocked: "Blocked by policy or unavailable tools",
+  agentStoppedBlockedOutput: "Blocked output",
   ingestTitle: "Ingest a filing",
   ingestDescription:
     "Fetch a filing from SEC EDGAR and index it for future questions.",
@@ -148,6 +150,8 @@ const zh: Record<CopyKey, string> = {
   agentStopped: "结束原因",
   agentStoppedFinal: "已生成最终回答",
   agentStoppedMaxSteps: "已达到最大步骤数",
+  agentStoppedBlocked: "因策略限制或工具不可用而停止",
+  agentStoppedBlockedOutput: "输出被阻止",
   ingestTitle: "导入文件",
   ingestDescription: "从 SEC EDGAR 获取文件并建立索引，以便后续提问。",
   ingestTicker: "股票代码",

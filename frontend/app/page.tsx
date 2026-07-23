@@ -1,3 +1,5 @@
+import { FinragApp } from "@/components/FinragApp";
+
 export default function Page() {
-  return <h1>📑 finrag</h1>;
+  return <FinragApp />;
 }
