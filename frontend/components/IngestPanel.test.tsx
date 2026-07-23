@@ -178,3 +178,25 @@ test("uses a collapsed native disclosure with labelled form controls", () => {
   expect(panel.getByLabelText("Ingest a filing: Year")).toHaveAttribute("id");
   expect(panel.getByLabelText("Ingest a filing: Form")).toHaveAttribute("id");
 });
+
+test("announces pending ingest work in an independent live status", () => {
+  render(
+    <IngestPanel
+      locale="en"
+      pending
+      status={null}
+      error={null}
+      canRetry={false}
+      canRetryPoll={false}
+      onSubmit={vi.fn()}
+      onRetry={vi.fn()}
+      onRetryPoll={vi.fn()}
+    />,
+  );
+
+  const panel = openPanel();
+  const status = panel.getByRole("status");
+  expect(status).toHaveTextContent("Submitting filing…");
+  expect(status).toHaveAttribute("aria-live", "polite");
+  expect(status).toHaveAttribute("aria-atomic", "true");
+});

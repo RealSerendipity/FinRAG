@@ -151,6 +151,18 @@ describe("FinragApp", () => {
     expect(mobile.tagName).toBe("DETAILS");
   });
 
+  test("gives every form control an accessible name", () => {
+    const { container } = render(<FinragApp />);
+    const controls = Array.from(
+      container.querySelectorAll("input, select, textarea"),
+    );
+
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) {
+      expect(control).toHaveAccessibleName();
+    }
+  });
+
   test("switching to Agent hides scope and replaces the example question", () => {
     render(<FinragApp />);
     const settings = desktopSettings();
@@ -189,6 +201,10 @@ describe("FinragApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent("Enter a question.");
+    expect(screen.getByRole("alert")).toHaveAttribute(
+      "aria-live",
+      "assertive",
+    );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/health",
@@ -221,7 +237,9 @@ describe("FinragApp", () => {
         encoder.encode('event: status\ndata: {"stage":"processing"}\n\n'),
       );
     });
-    expect(await screen.findByText("Processing…")).toBeInTheDocument();
+    const status = await screen.findByText("Processing…");
+    expect(status).toHaveAttribute("role", "status");
+    expect(status).toHaveAttribute("aria-live", "polite");
 
     act(() => {
       streamController!.enqueue(

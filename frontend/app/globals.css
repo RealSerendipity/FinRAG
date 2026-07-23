@@ -8,9 +8,12 @@
   --muted: #5f6370;
   --border: #d5d8dd;
   --accent: #ff4b4b;
-  --accent-hover: #e63e3e;
+  --primary: #d93636;
+  --primary-hover: #c92d2d;
   --accent-text: #ffffff;
-  --focus: #ff4b4b;
+  --link: #b42318;
+  --focus: #b42318;
+  --radius: 8px;
   --success: #16834a;
   --error: #c62f2f;
 }
@@ -25,7 +28,8 @@
     --text: #fafafa;
     --muted: #b8bbc5;
     --border: #41434e;
-    --accent-hover: #ff6868;
+    --link: #ff8f8f;
+    --focus: #ff8f8f;
     --success: #5fd18c;
     --error: #ff8585;
   }
@@ -80,12 +84,12 @@ input:focus-visible,
 select:focus-visible,
 summary:focus-visible,
 a:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--focus) 72%, transparent);
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 
 a {
-  color: var(--accent);
+  color: var(--link);
   overflow-wrap: anywhere;
 }
 
@@ -181,14 +185,14 @@ h3 {
   min-width: 88px;
   min-height: 40px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--background);
   padding: 6px 12px;
 }
 
 .language-button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--link);
+  color: var(--link);
 }
 
 .mode-selector {
@@ -254,7 +258,7 @@ select {
   width: 100%;
   min-height: 40px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--surface);
   padding: 7px 12px;
 }
@@ -293,9 +297,9 @@ output {
 .question-panel button,
 .ingest-panel button:not(.language-button) {
   min-height: 40px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--accent);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--primary);
   color: var(--accent-text);
   padding: 7px 16px;
   font-size: 16px;
@@ -304,8 +308,8 @@ output {
 
 .question-panel button:hover:not(:disabled),
 .ingest-panel button:hover:not(:disabled) {
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
+  border-color: var(--primary-hover);
+  background: var(--primary-hover);
 }
 
 .request-status,
@@ -365,7 +369,7 @@ output {
 .ingest-panel,
 .mobile-settings {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
 }
 
@@ -450,6 +454,17 @@ pre {
   margin-top: 20px;
   border-top: 1px solid var(--border);
   padding-top: 16px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 @media (max-width: 800px) {

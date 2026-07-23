@@ -32,5 +32,10 @@ describe("RagResult", () => {
     expect(
       screen.getByText("Total net sales were $391,035 million."),
     ).toBeInTheDocument();
+    const details = screen.getByText(/chunk 17/i).closest("details");
+    expect(details).not.toBeNull();
+    expect(details!.querySelector("summary")).toHaveTextContent(
+      "chunk 17 · Verified",
+    );
   });
 });

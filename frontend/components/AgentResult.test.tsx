@@ -33,7 +33,11 @@ describe("AgentResult", () => {
     expect(tools).not.toBeNull();
     expect(within(tools!).getByText("sec_xbrl_metric")).toBeInTheDocument();
     expect(within(tools!).getByText("calculator")).toBeInTheDocument();
-    expect(screen.getByText(/Step 1/).closest("details")).not.toBeNull();
+    const details = screen.getByText(/Step 1/).closest("details");
+    expect(details).not.toBeNull();
+    expect(details!.querySelector("summary")).toHaveTextContent(
+      "Step 1 — sec_xbrl_metric",
+    );
     expect(screen.getByText("I need both fiscal years.")).toBeInTheDocument();
     expect(screen.getByText(/\"ticker\": \"AAPL\"/)).toBeInTheDocument();
     expect(screen.getByText(/FY2023: 29.9/)).toBeInTheDocument();
