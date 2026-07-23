@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.14.2",
     "python-dotenv>=1.0.1",
+    "qstash>=3.4.0",
     "slowapi>=0.1.10",
     "sse-starlette>=2.1",
     "tiktoken>=0.7",

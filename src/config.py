@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     # unset disables auth (local dev, tests). /health stays open either way.
     API_ROOT_PATH: str = ""
     API_TOKEN: str | None = None
+    FINRAG_PUBLIC_API_URL: str = ""
+    QSTASH_TOKEN: str = ""
+    QSTASH_CURRENT_SIGNING_KEY: str = ""
+    QSTASH_NEXT_SIGNING_KEY: str = ""
     # MCP_TOKEN: bearer token required by the MCP server's HTTP (streamable-http)
     # transport when exposed as a network service. Unset = no auth (stdio / local only).
     MCP_TOKEN: str | None = None
@@ -144,7 +148,11 @@ class Settings(BaseSettings):
         "DATABASE_URL",
         "EDGAR_USER_AGENT",
         "EMBEDDING_MODEL",
+        "FINRAG_PUBLIC_API_URL",
         "NVIDIA_BASE_URL",
+        "QSTASH_TOKEN",
+        "QSTASH_CURRENT_SIGNING_KEY",
+        "QSTASH_NEXT_SIGNING_KEY",
         mode="before",
     )
     @classmethod
@@ -402,6 +410,27 @@ def api_root_path() -> str:
 def api_token() -> str | None:
     """Bearer token required on mutating/expensive routes; None disables auth."""
     return _get_settings().API_TOKEN
+
+
+def finrag_public_api_url() -> str:
+    value = _required_env_value(
+        "FINRAG_PUBLIC_API_URL", _get_settings().FINRAG_PUBLIC_API_URL
+    )
+    return value.rstrip("/")
+
+
+def qstash_token() -> str:
+    return _required_env_value("QSTASH_TOKEN", _get_settings().QSTASH_TOKEN)
+
+
+def qstash_signing_keys() -> tuple[str, str]:
+    current = _required_env_value(
+        "QSTASH_CURRENT_SIGNING_KEY", _get_settings().QSTASH_CURRENT_SIGNING_KEY
+    )
+    next_key = _required_env_value(
+        "QSTASH_NEXT_SIGNING_KEY", _get_settings().QSTASH_NEXT_SIGNING_KEY
+    )
+    return current, next_key
 
 
 def mcp_token() -> str | None:
