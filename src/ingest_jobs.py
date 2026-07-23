@@ -19,6 +19,7 @@ _ROW_COLUMNS = (
     "period",
     "status",
     "attempts",
+    "claim_token",
     "qstash_message_id",
     "chunks",
     "elapsed_s",
@@ -31,6 +32,14 @@ def _as_dict(row) -> dict:
     if isinstance(row, dict):
         return dict(row)
     return dict(zip(_ROW_COLUMNS, row, strict=True))
+
+
+def _is_valid_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return True
 
 
 def aggregate_batch(batch_id: str, rows: Iterable) -> dict:
@@ -102,6 +111,7 @@ def create_batch(
             INSERT INTO ingest_jobs
                 (id, batch_id, ticker, form_type, year, period)
             VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
             """,
             rows,
         )
@@ -112,10 +122,12 @@ def create_batch(
 
 def get_batch(batch_id: str) -> dict | None:
     """Return the aggregated public state for a persisted batch, if it exists."""
+    if not _is_valid_uuid(batch_id):
+        return None
     rows = db.query(
         """
         SELECT id::text, batch_id::text, ticker, form_type, year, period,
-               status, attempts, qstash_message_id, chunks, elapsed_s,
+               status, attempts, claim_token::text, qstash_message_id, chunks, elapsed_s,
                error_code, error_message
         FROM ingest_jobs
         WHERE batch_id = %s::uuid
@@ -128,10 +140,12 @@ def get_batch(batch_id: str) -> dict | None:
 
 def get_item(item_id: str) -> dict | None:
     """Return one persisted ingest item, if it exists."""
+    if not _is_valid_uuid(item_id):
+        return None
     rows = db.query(
         """
         SELECT id::text, batch_id::text, ticker, form_type, year, period,
-               status, attempts, qstash_message_id, chunks, elapsed_s,
+               status, attempts, claim_token::text, qstash_message_id, chunks, elapsed_s,
                error_code, error_message
         FROM ingest_jobs
         WHERE id = %s::uuid
@@ -142,13 +156,21 @@ def get_item(item_id: str) -> dict | None:
 
 
 def claim(item_id: str) -> dict | None:
-    """Atomically claim a queued, retrying, or stale running ingest item."""
+    """Atomically claim a queued, retrying, or stale running item with a token."""
+    if not _is_valid_uuid(item_id):
+        return None
+    claim_token = str(uuid.uuid4())
+
     def _write(conn) -> dict | None:
         row = conn.execute(
             """
             UPDATE ingest_jobs
             SET status = 'running',
-                attempts = attempts + 1,
+                attempts = CASE
+                    WHEN claim_token IS DISTINCT FROM %s::uuid THEN attempts + 1
+                    ELSE attempts
+                END,
+                claim_token = %s::uuid,
                 started_at = COALESCE(started_at, now()),
                 updated_at = now(),
                 error_code = NULL,
@@ -160,12 +182,16 @@ def claim(item_id: str) -> dict | None:
                       status = 'running'
                       AND updated_at < now() - interval '330 seconds'
                   )
+                  OR (
+                      status = 'running'
+                      AND claim_token = %s::uuid
+                  )
               )
             RETURNING id::text, batch_id::text, ticker, form_type, year, period,
-                      status, attempts, qstash_message_id, chunks, elapsed_s,
+                      status, attempts, claim_token::text, qstash_message_id, chunks, elapsed_s,
                       error_code, error_message
             """,
-            (item_id,),
+            (claim_token, claim_token, item_id, claim_token),
         ).fetchone()
         return _as_dict(row) if row else None
 
@@ -187,36 +213,48 @@ def record_message(item_id: str, message_id: str) -> None:
     db.run_write(_write)
 
 
-def mark_done(item_id: str, *, chunks: int, elapsed_s: float) -> None:
-    """Mark an ingest item successfully completed with its result details."""
-    def _write(conn) -> None:
-        conn.execute(
+def mark_done(item_id: str, *, claim_token: str, chunks: int, elapsed_s: float) -> bool:
+    """Mark a token-owned running item done, returning whether it was accepted."""
+    if not _is_valid_uuid(item_id) or not _is_valid_uuid(claim_token):
+        return False
+
+    def _write(conn) -> bool:
+        result = conn.execute(
             """
             UPDATE ingest_jobs
             SET status = 'done', chunks = %s, elapsed_s = %s,
                 error_code = NULL, error_message = NULL,
                 updated_at = now(), finished_at = now()
             WHERE id = %s::uuid
+              AND status = 'running'
+              AND claim_token = %s::uuid
             """,
-            (chunks, elapsed_s, item_id),
+            (chunks, elapsed_s, item_id, claim_token),
         )
+        return result.rowcount == 1
 
-    db.run_write(_write)
+    return db.run_write(_write)
 
 
-def mark_retrying(item_id: str, *, elapsed_s: float) -> None:
-    """Mark an ingest item retryable after a transient execution failure."""
-    def _write(conn) -> None:
-        conn.execute(
+def mark_retrying(item_id: str, *, claim_token: str, elapsed_s: float) -> bool:
+    """Mark a token-owned running item retryable, returning whether it was accepted."""
+    if not _is_valid_uuid(item_id) or not _is_valid_uuid(claim_token):
+        return False
+
+    def _write(conn) -> bool:
+        result = conn.execute(
             """
             UPDATE ingest_jobs
             SET status = 'retrying', elapsed_s = %s, updated_at = now()
             WHERE id = %s::uuid
+              AND status = 'running'
+              AND claim_token = %s::uuid
             """,
-            (elapsed_s, item_id),
+            (elapsed_s, item_id, claim_token),
         )
+        return result.rowcount == 1
 
-    db.run_write(_write)
+    return db.run_write(_write)
 
 
 def mark_error(
@@ -225,18 +263,44 @@ def mark_error(
     code: str,
     message: str,
     elapsed_s: float | None = None,
-) -> None:
-    """Mark an ingest item terminally failed with a safe error message."""
-    def _write(conn) -> None:
-        conn.execute(
+    claim_token: str | None = None,
+) -> bool:
+    """Fence worker errors by token; no-token delivery errors never overwrite done."""
+    if not _is_valid_uuid(item_id) or (
+        claim_token is not None and not _is_valid_uuid(claim_token)
+    ):
+        return False
+
+    if claim_token is None:
+        def _write(conn) -> bool:
+            result = conn.execute(
+                """
+                UPDATE ingest_jobs
+                SET status = 'error', error_code = %s, error_message = %s,
+                    elapsed_s = COALESCE(%s, elapsed_s),
+                    updated_at = now(), finished_at = now()
+                WHERE id = %s::uuid
+                  AND status <> 'done'
+                """,
+                (code, message, elapsed_s, item_id),
+            )
+            return result.rowcount == 1
+
+        return db.run_write(_write)
+
+    def _write(conn) -> bool:
+        result = conn.execute(
             """
             UPDATE ingest_jobs
             SET status = 'error', error_code = %s, error_message = %s,
                 elapsed_s = COALESCE(%s, elapsed_s),
                 updated_at = now(), finished_at = now()
             WHERE id = %s::uuid
+              AND status = 'running'
+              AND claim_token = %s::uuid
             """,
-            (code, message, elapsed_s, item_id),
+            (code, message, elapsed_s, item_id, claim_token),
         )
+        return result.rowcount == 1
 
-    db.run_write(_write)
+    return db.run_write(_write)
