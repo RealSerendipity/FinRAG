@@ -11,8 +11,10 @@ type IngestPanelProps = {
   status: IngestStatus | null;
   error: string | null;
   canRetry: boolean;
+  canRetryPoll: boolean;
   onSubmit: (request: IngestRequest) => void;
   onRetry: () => void;
+  onRetryPoll: () => void;
 };
 
 /** Render filing inputs and persistent ingest progress without owning network state. */
@@ -22,8 +24,10 @@ export function IngestPanel({
   status,
   error,
   canRetry,
+  canRetryPoll,
   onSubmit,
   onRetry,
+  onRetryPoll,
 }: IngestPanelProps) {
   const [ticker, setTicker] = useState("MSFT");
   const [year, setYear] = useState(2024);
@@ -104,6 +108,11 @@ export function IngestPanel({
       {canRetry ? (
         <button type="button" disabled={pending} onClick={onRetry}>
           {t.ingestRetrySubmit}
+        </button>
+      ) : null}
+      {canRetryPoll ? (
+        <button type="button" disabled={pending} onClick={onRetryPoll}>
+          {t.ingestRetryPoll}
         </button>
       ) : null}
 

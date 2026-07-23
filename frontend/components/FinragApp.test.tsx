@@ -739,4 +739,281 @@ describe("FinragApp", () => {
       "The server returned an invalid response.",
     );
   });
+
+  test("retries transient poll HTTP responses and resets failures after success", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "77777777-7777-4777-8777-777777777777",
+    );
+    const pollResponses = [
+      new Response(null, { status: 502 }),
+      new Response(null, { status: 503 }),
+      Response.json({
+        job_id: "job-transient",
+        status: "running",
+        items: [],
+        results: [],
+      }),
+      new Response(null, { status: 502 }),
+      new Response(null, { status: 503 }),
+      Response.json({
+        job_id: "job-transient",
+        status: "done",
+        items: [],
+        results: [
+          { ticker: "MSFT", chunks: 8, elapsed_s: 2 },
+        ],
+      }),
+    ];
+    let polls = 0;
+    mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      if (url === "/api/ingest") {
+        return Response.json(
+          {
+            job_id: "job-transient",
+            status: "queued",
+            poll: "/ingest/job-transient",
+          },
+          { status: 202 },
+        );
+      }
+      if (url === "/api/ingest/job-transient") {
+        const response = pollResponses[polls];
+        polls += 1;
+        return response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(<FinragApp />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    });
+
+    for (let index = 0; index < pollResponses.length; index += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+    }
+
+    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(polls).toBe(6);
+    expect(
+      screen.queryByRole("button", { name: "Retrying status check…" }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("resumes only GET polling after three failures", async () => {
+    vi.useFakeTimers();
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValue("88888888-8888-4888-8888-888888888888");
+    let posts = 0;
+    let polls = 0;
+    mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      if (url === "/api/ingest") {
+        posts += 1;
+        return Response.json(
+          {
+            job_id: "job-recover",
+            status: "queued",
+            poll: "/ingest/job-recover",
+          },
+          { status: 202 },
+        );
+      }
+      if (url === "/api/ingest/job-recover") {
+        polls += 1;
+        if (polls <= 3) {
+          return Promise.reject(new Error("offline"));
+        }
+        return Response.json({
+          job_id: "job-recover",
+          status: "done",
+          items: [],
+          results: [
+            { ticker: "MSFT", chunks: 9, elapsed_s: 2.5 },
+          ],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(<FinragApp />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    const retryPoll = screen.getByRole("button", {
+      name: "Retrying status check…",
+    });
+    await act(async () => {
+      fireEvent.click(retryPoll);
+    });
+
+    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(posts).toBe(1);
+    expect(polls).toBe(4);
+    expect(randomUUID).toHaveBeenCalledOnce();
+  });
+
+  test("rejects an unsafe submission job id without polling", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "99999999-9999-4999-8999-999999999999",
+    );
+    const fetchMock = mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      if (url === "/api/ingest") {
+        return Response.json(
+          { job_id: "../health", status: "queued", poll: "/ingest/../health" },
+          { status: 202 },
+        );
+      }
+      throw new Error(`Unsafe poll request: ${url}`);
+    });
+    render(<FinragApp />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The server returned an invalid response.",
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).startsWith("/api/ingest/"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("rejects an unsafe job id returned by status polling", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    let polls = 0;
+    mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      if (url === "/api/ingest") {
+        return Response.json(
+          { job_id: "job-safe", status: "queued", poll: "/ingest/job-safe" },
+          { status: 202 },
+        );
+      }
+      if (url === "/api/ingest/job-safe") {
+        polls += 1;
+        return Response.json({
+          job_id: "../health",
+          status: "running",
+          items: [],
+          results: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(<FinragApp />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The server returned an invalid response.",
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(polls).toBe(1);
+  });
+
+  test("hides submission retry after a deterministic retry response", async () => {
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    );
+    let submissions = 0;
+    mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      if (url === "/api/ingest") {
+        submissions += 1;
+        if (submissions === 1) {
+          return Response.json(
+            {
+              detail: {
+                code: "queue_unavailable",
+                error: "Queue unavailable",
+                retryable: true,
+              },
+            },
+            { status: 503 },
+          );
+        }
+        return Response.json({ detail: "Invalid filing" }, { status: 400 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(<FinragApp />);
+    fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+    const retry = await screen.findByRole("button", {
+      name: "Retry submission",
+    });
+
+    fireEvent.click(retry);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Invalid filing",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Retry submission" }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("StrictMode submits exactly once for one ingest click", async () => {
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    );
+    let posts = 0;
+    mockFetch((url) => {
+      if (url === "/api/health") {
+        return healthResponse();
+      }
+      if (url === "/api/ingest") {
+        posts += 1;
+        return Response.json(
+          {
+            job_id: "job-strict",
+            status: "queued",
+            poll: "/ingest/job-strict",
+          },
+          { status: 202 },
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(
+      <StrictMode>
+        <FinragApp />
+      </StrictMode>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Ingest filing" }));
+
+    await waitFor(() => expect(posts).toBe(1));
+  });
 });

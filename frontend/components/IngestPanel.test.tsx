@@ -13,8 +13,10 @@ test("submits one normalized ticker with the supported default filing fields", (
       status={null}
       error={null}
       canRetry={false}
+      canRetryPoll={false}
       onSubmit={onSubmit}
       onRetry={vi.fn()}
+      onRetryPoll={vi.fn()}
     />,
   );
 
@@ -68,8 +70,10 @@ test("renders backend result and error strings as text", () => {
       status={status}
       error={null}
       canRetry={false}
+      canRetryPoll={false}
       onSubmit={vi.fn()}
       onRetry={vi.fn()}
+      onRetryPoll={vi.fn()}
     />,
   );
 
@@ -87,8 +91,10 @@ test("exposes retry submission without rendering the idempotency key", () => {
       status={null}
       error="The request failed."
       canRetry
+      canRetryPoll={false}
       onSubmit={vi.fn()}
       onRetry={onRetry}
+      onRetryPoll={vi.fn()}
     />,
   );
 
@@ -96,4 +102,35 @@ test("exposes retry submission without rendering the idempotency key", () => {
 
   expect(onRetry).toHaveBeenCalledOnce();
   expect(container).not.toHaveTextContent("idempotency");
+});
+
+test("offers a separate status-check retry action", () => {
+  const onRetryPoll = vi.fn();
+  render(
+    <IngestPanel
+      locale="en"
+      pending={false}
+      status={{
+        job_id: "job-1",
+        status: "running",
+        items: [],
+        results: [],
+      }}
+      error="Polling stopped."
+      canRetry={false}
+      canRetryPoll
+      onSubmit={vi.fn()}
+      onRetry={vi.fn()}
+      onRetryPoll={onRetryPoll}
+    />,
+  );
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Retrying status check…" }),
+  );
+
+  expect(onRetryPoll).toHaveBeenCalledOnce();
+  expect(
+    screen.queryByRole("button", { name: "Retry submission" }),
+  ).not.toBeInTheDocument();
 });

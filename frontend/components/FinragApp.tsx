@@ -41,6 +41,8 @@ type HealthCache = {
   promise: Promise<HealthStatus | null>;
 };
 
+const INGEST_JOB_ID = /^[A-Za-z0-9-]{1,64}$/;
+
 let healthCache: HealthCache | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -108,6 +110,7 @@ function isIngestSubmission(value: unknown): value is IngestSubmission {
   return (
     isRecord(value) &&
     typeof value.job_id === "string" &&
+    INGEST_JOB_ID.test(value.job_id) &&
     value.status === "queued" &&
     typeof value.poll === "string"
   );
@@ -118,6 +121,7 @@ function isIngestStatus(value: unknown): value is IngestStatus {
   return (
     isRecord(value) &&
     typeof value.job_id === "string" &&
+    INGEST_JOB_ID.test(value.job_id) &&
     ["queued", "running", "done", "error"].includes(String(value.status)) &&
     Array.isArray(value.items) &&
     value.items.every(
@@ -226,7 +230,7 @@ function loadHealthOnce(): Promise<HealthStatus | null> {
   return cache.promise;
 }
 
-/** Coordinate all public RAG and Agent network and presentation state. */
+/** Coordinate all public RAG, Agent, and filing-ingest network and UI state. */
 export function FinragApp() {
   const [locale, setLocale] = useState<Locale>(defaultLocale);
   const [mode, setMode] = useState<FinragMode>("rag");
@@ -245,6 +249,7 @@ export function FinragApp() {
   const [ingestStatus, setIngestStatus] = useState<IngestStatus | null>(null);
   const [ingestError, setIngestError] = useState<UiError | null>(null);
   const [ingestCanRetry, setIngestCanRetry] = useState(false);
+  const [ingestCanRetryPoll, setIngestCanRetryPoll] = useState(false);
   const requestController = useRef<AbortController | null>(null);
   const requestGeneration = useRef(0);
   const ingestController = useRef<AbortController | null>(null);
@@ -338,10 +343,13 @@ export function FinragApp() {
       ingestGeneration.current === generation;
 
     try {
-      const response = await fetch(`/api/ingest/${jobId}`, {
+      const response = await fetch(`/api/ingest/${encodeURIComponent(jobId)}`, {
         signal: controller.signal,
       });
       if (!response.ok) {
+        if ([429, 502, 503].includes(response.status)) {
+          throw new Error("transient ingest status response");
+        }
         throw new UiRequestError(await responseError(response));
       }
       let parsed: unknown;
@@ -364,6 +372,7 @@ export function FinragApp() {
       }
       setIngestStatus(parsed);
       setIngestError(null);
+      setIngestCanRetryPoll(false);
       if (parsed.status === "done" || parsed.status === "error") {
         setIngestCanRetry(false);
         return;
@@ -375,11 +384,13 @@ export function FinragApp() {
       }
       if (caught instanceof UiRequestError) {
         setIngestError(caught.detail);
+        setIngestCanRetryPoll(false);
         return;
       }
       const nextFailures = failures + 1;
       if (nextFailures >= 3) {
         setIngestError({ kind: "copy", key: "networkPollingStopped" });
+        setIngestCanRetryPoll(true);
         return;
       }
       setIngestError({ kind: "copy", key: "networkPollFailed" });
@@ -403,6 +414,8 @@ export function FinragApp() {
       ingestGeneration.current === generation;
     setIngestPending(true);
     setIngestError(null);
+    setIngestCanRetry(false);
+    setIngestCanRetryPoll(false);
 
     try {
       const response = await fetch("/api/ingest", {
@@ -508,6 +521,7 @@ export function FinragApp() {
     ingestLogicalSubmission.current = logical;
     setIngestStatus(null);
     setIngestCanRetry(false);
+    setIngestCanRetryPoll(false);
     void postIngest(logical, generation);
   }
 
@@ -520,6 +534,19 @@ export function FinragApp() {
     const generation = ingestGeneration.current + 1;
     ingestGeneration.current = generation;
     void postIngest(logical, generation);
+  }
+
+  function retryIngestPoll() {
+    const jobId = ingestStatus?.job_id;
+    if (!jobId || !INGEST_JOB_ID.test(jobId)) {
+      return;
+    }
+    cancelIngestWork();
+    const generation = ingestGeneration.current + 1;
+    ingestGeneration.current = generation;
+    setIngestError(null);
+    setIngestCanRetryPoll(false);
+    void pollIngest(jobId, generation, 0);
   }
 
   function changeMode(nextMode: FinragMode) {
@@ -780,8 +807,10 @@ export function FinragApp() {
           status={ingestStatus}
           error={ingestErrorText}
           canRetry={ingestCanRetry}
+          canRetryPoll={ingestCanRetryPoll}
           onSubmit={submitIngest}
           onRetry={retryIngestSubmission}
+          onRetryPoll={retryIngestPoll}
         />
       </div>
     </main>
