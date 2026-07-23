@@ -61,7 +61,7 @@ const en = {
   ingestTitle: "Ingest a filing",
   ingestDescription:
     "Fetch a filing from SEC EDGAR and index it for future questions.",
-  ingestTicker: "Ticker",
+  ingestTicker: "Filing ticker",
   ingestYear: "Year",
   ingestForm: "Form",
   ingestSubmit: "Ingest filing",
@@ -154,7 +154,7 @@ const zh: Record<CopyKey, string> = {
   agentStoppedBlockedOutput: "输出被阻止",
   ingestTitle: "导入文件",
   ingestDescription: "从 SEC EDGAR 获取文件并建立索引，以便后续提问。",
-  ingestTicker: "股票代码",
+  ingestTicker: "文件股票代码",
   ingestYear: "年份",
   ingestForm: "文件类型",
   ingestSubmit: "导入文件",

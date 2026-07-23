@@ -8,10 +8,14 @@ import type {
   AgentAnswer,
   AgentRequest,
   HealthStatus,
+  IngestRequest,
+  IngestStatus,
+  IngestSubmission,
   RagAnswer,
   RagRequest,
 } from "@/lib/types";
 import { AgentResult } from "./AgentResult";
+import { IngestPanel } from "./IngestPanel";
 import { ModeSidebar, type FinragMode } from "./ModeSidebar";
 import { QuestionPanel } from "./QuestionPanel";
 import { RagResult } from "./RagResult";
@@ -97,6 +101,47 @@ function isAgentAnswer(value: unknown): value is AgentAnswer {
     typeof value.cost_estimated === "boolean" &&
     typeof value.latency_ms === "number" &&
     (typeof value.trace_url === "string" || value.trace_url === null)
+  );
+}
+
+function isIngestSubmission(value: unknown): value is IngestSubmission {
+  return (
+    isRecord(value) &&
+    typeof value.job_id === "string" &&
+    value.status === "queued" &&
+    typeof value.poll === "string"
+  );
+}
+
+function isIngestStatus(value: unknown): value is IngestStatus {
+  const statuses = ["queued", "running", "retrying", "done", "error"];
+  return (
+    isRecord(value) &&
+    typeof value.job_id === "string" &&
+    ["queued", "running", "done", "error"].includes(String(value.status)) &&
+    Array.isArray(value.items) &&
+    value.items.every(
+      (item) =>
+        isRecord(item) &&
+        typeof item.id === "string" &&
+        typeof item.ticker === "string" &&
+        statuses.includes(String(item.status)) &&
+        Number.isInteger(item.attempts) &&
+        Number(item.attempts) >= 0,
+    ) &&
+    Array.isArray(value.results) &&
+    value.results.every(
+      (result) =>
+        isRecord(result) &&
+        typeof result.ticker === "string" &&
+        (result.elapsed_s === null ||
+          (typeof result.elapsed_s === "number" &&
+            Number.isFinite(result.elapsed_s))) &&
+        (typeof result.error === "string" ||
+          (typeof result.chunks === "number" &&
+            Number.isInteger(result.chunks) &&
+            result.chunks >= 0)),
+    )
   );
 }
 
@@ -196,12 +241,27 @@ export function FinragApp() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [ragResult, setRagResult] = useState<RagAnswer | null>(null);
   const [agentResult, setAgentResult] = useState<AgentAnswer | null>(null);
+  const [ingestPending, setIngestPending] = useState(false);
+  const [ingestStatus, setIngestStatus] = useState<IngestStatus | null>(null);
+  const [ingestError, setIngestError] = useState<UiError | null>(null);
+  const [ingestCanRetry, setIngestCanRetry] = useState(false);
   const requestController = useRef<AbortController | null>(null);
   const requestGeneration = useRef(0);
+  const ingestController = useRef<AbortController | null>(null);
+  const ingestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ingestGeneration = useRef(0);
+  const ingestLogicalSubmission = useRef<{
+    request: IngestRequest;
+    idempotencyKey: string;
+  } | null>(null);
   const t = copy[locale];
   const statusText = statusKey ? t[statusKey] : null;
   const errorText =
     error?.kind === "copy" ? t[error.key] : (error?.text ?? null);
+  const ingestErrorText =
+    ingestError?.kind === "copy"
+      ? t[ingestError.key]
+      : (ingestError?.text ?? null);
 
   useEffect(() => {
     let active = true;
@@ -218,9 +278,249 @@ export function FinragApp() {
   useEffect(
     () => () => {
       requestController.current?.abort();
+      ingestGeneration.current += 1;
+      ingestController.current?.abort();
+      if (ingestTimer.current !== null) {
+        clearTimeout(ingestTimer.current);
+      }
     },
     [],
   );
+
+  function cancelIngestWork() {
+    ingestController.current?.abort();
+    ingestController.current = null;
+    if (ingestTimer.current !== null) {
+      clearTimeout(ingestTimer.current);
+      ingestTimer.current = null;
+    }
+  }
+
+  function queuedStatus(jobId: string): IngestStatus {
+    return {
+      job_id: jobId,
+      status: "queued",
+      items: [],
+      results: [],
+    };
+  }
+
+  function scheduleIngestPoll(
+    jobId: string,
+    generation: number,
+    failures: number,
+  ) {
+    if (ingestGeneration.current !== generation) {
+      return;
+    }
+    if (ingestTimer.current !== null) {
+      clearTimeout(ingestTimer.current);
+    }
+    ingestTimer.current = setTimeout(() => {
+      ingestTimer.current = null;
+      void pollIngest(jobId, generation, failures);
+    }, 5_000);
+  }
+
+  async function pollIngest(
+    jobId: string,
+    generation: number,
+    failures: number,
+  ) {
+    if (ingestGeneration.current !== generation) {
+      return;
+    }
+    const controller = new AbortController();
+    ingestController.current = controller;
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      ingestController.current === controller &&
+      ingestGeneration.current === generation;
+
+    try {
+      const response = await fetch(`/api/ingest/${jobId}`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new UiRequestError(await responseError(response));
+      }
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch {
+        throw new UiRequestError({
+          kind: "copy",
+          key: "validationInvalidResponse",
+        });
+      }
+      if (!isIngestStatus(parsed) || parsed.job_id !== jobId) {
+        throw new UiRequestError({
+          kind: "copy",
+          key: "validationInvalidResponse",
+        });
+      }
+      if (!isCurrent()) {
+        return;
+      }
+      setIngestStatus(parsed);
+      setIngestError(null);
+      if (parsed.status === "done" || parsed.status === "error") {
+        setIngestCanRetry(false);
+        return;
+      }
+      scheduleIngestPoll(jobId, generation, 0);
+    } catch (caught) {
+      if (!isCurrent()) {
+        return;
+      }
+      if (caught instanceof UiRequestError) {
+        setIngestError(caught.detail);
+        return;
+      }
+      const nextFailures = failures + 1;
+      if (nextFailures >= 3) {
+        setIngestError({ kind: "copy", key: "networkPollingStopped" });
+        return;
+      }
+      setIngestError({ kind: "copy", key: "networkPollFailed" });
+      scheduleIngestPoll(jobId, generation, nextFailures);
+    } finally {
+      if (ingestController.current === controller) {
+        ingestController.current = null;
+      }
+    }
+  }
+
+  async function postIngest(
+    logical: { request: IngestRequest; idempotencyKey: string },
+    generation: number,
+  ) {
+    const controller = new AbortController();
+    ingestController.current = controller;
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      ingestController.current === controller &&
+      ingestGeneration.current === generation;
+    setIngestPending(true);
+    setIngestError(null);
+
+    try {
+      const response = await fetch("/api/ingest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": logical.idempotencyKey,
+        },
+        body: JSON.stringify(logical.request),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        let parsed: unknown = null;
+        try {
+          parsed = await response.clone().json();
+        } catch {
+          // The standard response parser below handles malformed error bodies.
+        }
+        const detail =
+          isRecord(parsed) && isRecord(parsed.detail) ? parsed.detail : null;
+        if (response.status === 503 && detail?.retryable === true) {
+          if (!isCurrent()) {
+            return;
+          }
+          const jobId =
+            typeof detail.job_id === "string" ? detail.job_id : null;
+          if (jobId) {
+            setIngestStatus(queuedStatus(jobId));
+            scheduleIngestPoll(jobId, generation, 0);
+          }
+          setIngestCanRetry(true);
+          setIngestError(
+            typeof detail.error === "string"
+              ? { kind: "raw", text: detail.error }
+              : { kind: "copy", key: "backendUnavailable" },
+          );
+          return;
+        }
+        throw new UiRequestError(await responseError(response));
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch {
+        throw new UiRequestError({
+          kind: "copy",
+          key: "validationInvalidResponse",
+        });
+      }
+      if (!isIngestSubmission(parsed)) {
+        throw new UiRequestError({
+          kind: "copy",
+          key: "validationInvalidResponse",
+        });
+      }
+      if (!isCurrent()) {
+        return;
+      }
+      setIngestStatus(queuedStatus(parsed.job_id));
+      setIngestCanRetry(false);
+      scheduleIngestPoll(parsed.job_id, generation, 0);
+    } catch (caught) {
+      if (!isCurrent()) {
+        return;
+      }
+      if (caught instanceof UiRequestError) {
+        setIngestError(caught.detail);
+      } else {
+        setIngestError({ kind: "copy", key: "networkRequestFailed" });
+        setIngestCanRetry(true);
+      }
+    } finally {
+      if (isCurrent()) {
+        setIngestPending(false);
+        ingestController.current = null;
+      }
+    }
+  }
+
+  function submitIngest(request: IngestRequest) {
+    const tickerValue = request.tickers[0]?.trim().toUpperCase() ?? "";
+    if (!tickerValue) {
+      setIngestError({ kind: "copy", key: "validationTickerRequired" });
+      return;
+    }
+    if (
+      !Number.isInteger(request.year) ||
+      Number(request.year) < 1994 ||
+      Number(request.year) > 2030
+    ) {
+      setIngestError({ kind: "copy", key: "validationYearRange" });
+      return;
+    }
+
+    cancelIngestWork();
+    const generation = ingestGeneration.current + 1;
+    ingestGeneration.current = generation;
+    const logical = {
+      request: { ...request, tickers: [tickerValue] },
+      idempotencyKey: crypto.randomUUID(),
+    };
+    ingestLogicalSubmission.current = logical;
+    setIngestStatus(null);
+    setIngestCanRetry(false);
+    void postIngest(logical, generation);
+  }
+
+  function retryIngestSubmission() {
+    const logical = ingestLogicalSubmission.current;
+    if (!logical) {
+      return;
+    }
+    cancelIngestWork();
+    const generation = ingestGeneration.current + 1;
+    ingestGeneration.current = generation;
+    void postIngest(logical, generation);
+  }
 
   function changeMode(nextMode: FinragMode) {
     if (nextMode === mode) {
@@ -474,6 +774,15 @@ export function FinragApp() {
         {mode === "agent" && agentResult ? (
           <AgentResult locale={locale} result={agentResult} />
         ) : null}
+        <IngestPanel
+          locale={locale}
+          pending={ingestPending}
+          status={ingestStatus}
+          error={ingestErrorText}
+          canRetry={ingestCanRetry}
+          onSubmit={submitIngest}
+          onRetry={retryIngestSubmission}
+        />
       </div>
     </main>
   );
