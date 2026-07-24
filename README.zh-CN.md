@@ -3,18 +3,18 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <a href="https://finrag-frontend.vercel.app/">
+  <a href="https://www.realserendipity.org/finrag/">
     <img alt="Live Demo" src="docs/live-demo-badge.svg">
   </a>
 </p>
 
 <p align="center">
-  <a href="https://finrag-frontend.vercel.app/">
+  <a href="https://www.realserendipity.org/finrag/">
     <img alt="finrag —— RAG 模式对 Apple 10-K 提问，给出带 citation 的答案" src="docs/rag.png" width="820">
   </a>
 </p>
 
-> ### 🔗 在线体验 → **[finrag-frontend.vercel.app](https://finrag-frontend.vercel.app/)**
+> ### 🔗 在线体验 → **[www.realserendipity.org/finrag](https://www.realserendipity.org/finrag/)**
 > 对 Apple 10-K 提问,直接在浏览器里看到**带 citation、可追溯**的答案——无需任何安装。
 
 ## 概览
@@ -264,7 +264,7 @@ npm --prefix frontend run build
 
 | 服务 | 公网地址 |
 | --- | --- |
-| Next.js 前端 | [https://finrag-frontend.vercel.app](https://finrag-frontend.vercel.app/) |
+| Next.js 前端 | [https://www.realserendipity.org/finrag/](https://www.realserendipity.org/finrag/) |
 | FastAPI 后端 | [https://fin-rag-nu.vercel.app](https://fin-rag-nu.vercel.app/) |
 | 后端健康检查 | [https://fin-rag-nu.vercel.app/health](https://fin-rag-nu.vercel.app/health) |
 
