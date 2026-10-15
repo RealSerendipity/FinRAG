@@ -26,7 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 full = [
-    "docling>=2.104.0",
+    "docling>=2.132.0",
     "streamlit>=1.40",
 ]
 
